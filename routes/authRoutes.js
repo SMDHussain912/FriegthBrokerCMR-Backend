@@ -54,4 +54,68 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ success: true, user: req.user });
 });
 
+/**
+ * @route   POST /api/auth/register
+ * @desc    Register a new user account (name, email, password, role).
+ * @access  Public
+ */
+router.post('/register', async (req, res, next) => {
+  try {
+    const { name, email, password, role } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name is required',
+        code: 'NAME_REQUIRED'
+      });
+    }
+    const emailValue = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!emailValue) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 8 characters',
+        code: 'PASSWORD_TOO_SHORT'
+      });
+    }
+    const allowedRoles = ['broker', 'compliance_officer', 'admin'];
+    const userRole = allowedRoles.indexOf(role) !== -1 ? role : 'broker';
+
+    const existing = await User.findOne({ email: emailValue });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        error: 'An account with this email already exists',
+        code: 'EMAIL_EXISTS'
+      });
+    }
+
+    const passwordHash = await User.statics.hashPassword(password);
+    const user = await User.create({
+      name: String(name).trim(),
+      email: emailValue,
+      passwordHash,
+      role: userRole,
+      isDemoData: false
+    });
+
+    const token = signToken(user);
+    return res.status(201).json({
+      success: true,
+      token,
+      user: user.toSafeJSON(),
+      message: 'Account created. You are now signed in.'
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;
