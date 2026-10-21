@@ -97,7 +97,9 @@ router.post('/register', async (req, res, next) => {
       });
     }
 
-    const passwordHash = await User.statics.hashPassword(password);
+    // Statics are exposed directly on the model (e.g. `User.hashPassword`).
+    // `User.statics` is not part of the public Mongoose model API.
+    const passwordHash = await User.hashPassword(password);
     const user = await User.create({
       name: String(name).trim(),
       email: emailValue,
