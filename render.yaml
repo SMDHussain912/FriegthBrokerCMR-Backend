@@ -3,7 +3,7 @@ services:
     name: freightbroker-backend
     env: node
     plan: free
-    rootDir: backend
+    rootDir: .
     buildCommand: npm install
     startCommand: npm start
     envVars:
