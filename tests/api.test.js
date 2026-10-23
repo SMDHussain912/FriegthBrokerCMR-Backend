@@ -82,8 +82,41 @@ describe('API Endpoint Integration Tests', () => {
     assert.ok(Array.isArray(body.carriers));
   });
 
-  it('GET /api/loads returns list of demo loads', async () => {
+  it('GET /api/loads requires authentication', async () => {
     const res = await fetch(`${baseUrl}/api/loads`);
+    assert.equal(res.status, 401);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'AUTH_REQUIRED');
+  });
+
+  it('GET /api/loads returns list of demo loads when authenticated', async () => {
+    // Register + log in a broker to obtain a JWT (roles from server)
+    await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Api Tester',
+        email: 'api.tester@example.com',
+        password: 'ApiTester123!',
+      }),
+    });
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'api.tester@example.com',
+        password: 'ApiTester123!',
+      }),
+    });
+    assert.equal(login.status, 200);
+    const { token } = await login.json();
+    assert.ok(token, 'login must return a JWT');
+
+    const res = await fetch(`${baseUrl}/api/loads`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     assert.equal(res.status, 200);
 
     const body = await res.json();

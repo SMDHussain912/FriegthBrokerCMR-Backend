@@ -24,9 +24,9 @@ const assertObjectId = (value, label, res) => {
 /**
  * @route   GET /api/loads
  * @desc    Get all loads
- * @access  Public (in demo mode)
+ * @access  Authenticated (load data contains customer shipment details)
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requireAuth, async (req, res, next) => {
   try {
     const { status, equipmentType } = req.query;
     const filter = {};
@@ -80,9 +80,9 @@ router.post('/', requireAuth, async (req, res, next) => {
 /**
  * @route   GET /api/loads/:id
  * @desc    Get single load details
- * @access  Public (in demo mode)
+ * @access  Authenticated (load data contains customer shipment details)
  */
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requireAuth, async (req, res, next) => {
   try {
     const load = await Load.findById(req.params.id)
       .populate('assignedCarrier', 'legalName dotNumber mcNumber overallStatus authorityStatus');
