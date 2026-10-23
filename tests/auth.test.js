@@ -112,6 +112,51 @@ describe('Authentication API', () => {
     assert.equal(body.code, 'EMAIL_EXISTS');
   });
 
+  it('POST /api/auth/register ignores a forged admin role (always broker)', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Forged Admin',
+        email: 'forged.admin@example.com',
+        password: 'ForgedAdmin123!',
+        role: 'admin',
+      }),
+    });
+
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    // The server always assigns broker; a client can never self-escalate.
+    assert.equal(body.user.role, 'broker');
+
+    const stored = await User.findOne({ email: 'forged.admin@example.com' });
+    assert.ok(stored);
+    assert.equal(stored.role, 'broker');
+  });
+
+  it('POST /api/auth/register ignores a forged compliance_officer role (always broker)', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Forged Compliance',
+        email: 'forged.compliance@example.com',
+        password: 'ForgedCompliance123!',
+        role: 'compliance_officer',
+      }),
+    });
+
+    assert.equal(res.status, 201);
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.equal(body.user.role, 'broker');
+
+    const stored = await User.findOne({ email: 'forged.compliance@example.com' });
+    assert.ok(stored);
+    assert.equal(stored.role, 'broker');
+  });
+
   it('POST /api/auth/login returns a token for valid credentials', async () => {
     const res = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',

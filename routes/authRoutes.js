@@ -85,9 +85,10 @@ router.post('/register', async (req, res, next) => {
         code: 'PASSWORD_TOO_SHORT'
       });
     }
-    const allowedRoles = ['broker', 'compliance_officer', 'admin'];
-    const userRole = allowedRoles.indexOf(role) !== -1 ? role : 'broker';
-
+    // SECURITY: public registration ALWAYS creates a plain `broker` account.
+    // Privileged roles (compliance_officer, admin) are assigned only by an
+    // authenticated, authorized administrative process. The client-supplied
+    // `role` (if any) is IGNORED so a caller can never self-escalate.
     const existing = await User.findOne({ email: emailValue });
     if (existing) {
       return res.status(409).json({
@@ -104,7 +105,7 @@ router.post('/register', async (req, res, next) => {
       name: String(name).trim(),
       email: emailValue,
       passwordHash,
-      role: userRole,
+      role: 'broker',
       isDemoData: false
     });
 
