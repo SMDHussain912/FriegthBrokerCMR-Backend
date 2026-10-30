@@ -1,4 +1,5 @@
 const express = require('express');
+const morgan = require('morgan');
 const healthRoutes = require('./routes/healthRoutes');
 const carrierRoutes = require('./routes/carrierRoutes');
 const loadRoutes = require('./routes/loadRoutes');
@@ -11,6 +12,9 @@ const app = express();
 // Express body parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// HTTP request logging (development: colored console output)
+app.use(morgan('dev'));
 
 // CORS headers for cross-origin frontend communication (Vercel ↔ Render)
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
