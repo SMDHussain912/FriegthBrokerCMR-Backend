@@ -1,0 +1,68 @@
+const mongoose = require('mongoose');
+
+const membershipSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: true
+  },
+  role: {
+    type: String,
+    enum: ['broker_owner', 'broker_admin', 'broker', 'operations_manager',
+             'compliance_officer', 'finance', 'viewer',
+             'carrier_owner', 'carrier_admin', 'dispatcher', 'driver',
+             'platform_admin', 'platform_support'],
+    required: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  joinedAt: {
+    type: Date,
+    default: Date.now
+  },
+  permissions: {
+    type: [String],
+    validate: {
+      validator: (arr) => arr.every(p =>
+        ['VIEW_LOADS', 'CREATE_LOAD', 'EDIT_LOAD', 'ASSIGN_LOAD', 'DELETE_LOAD',
+         'VIEW_CARRIER', 'CREATE_CARRIER', 'EDIT_CARRIER', 'ASSIGN_CARRIER',
+         'VIEW_CUSTOMER', 'CREATE_CUSTOMER', 'EDIT_CUSTOMER',
+         'VIEW_INVOICE', 'CREATE_INVOICE', 'EDIT_INVOICE'].includes(p) ||
+        arr.length === 0
+      ],
+      message: 'Invalid permission'
+    }
+  }
+},
+  timestamps: true
+);
+
+membershipSchema.index({ user: 1, company: 1 }, { unique: true });
+
+membershipSchema.post('save', function(doc) {
+  const rolePermissions = {
+    broker_owner: ['VIEW_LOADS', 'CREATE_LOAD', 'EDIT_LOAD', 'ASSIGN_LOAD', 'DELETE_LOAD',
+                   'VIEW_CARRIER', 'CREATE_CARRIER', 'EDIT_CARRIER', 'ASSIGN_CARRIER',
+                   'VIEW_CUSTOMER', 'CREATE_CUSTOMER', 'EDIT_CUSTOMER'],
+    broker_admin: ['VIEW_LOADS', 'CREATE_LOAD', 'EDIT_LOAD', 'ASSIGN_LOAD',
+                   'VIEW_CARRIER', 'CREATE_CARRIER', 'EDIT_CARRIER'],
+    broker: ['VIEW_LOADS', 'CREATE_OWN_LOAD', 'VIEW_CARRIER', 'VIEW_CUSTOMER'],
+    carrier_owner: ['VIEW_OWN_CARRIER', 'CREATE_CARRIER', 'EDIT_CARRIER',
+                   'ASSIGN_CARRIER', 'VIEW_ASSIGNMENTS', 'CREATE_ASSIGNMENT'],
+    carrier_admin: ['VIEW_OWN_CARRIER', 'EDIT_CARRIER', 'ASSIGN_CARRIER'],
+    dispatcher: ['VIEW_ASSIGNMENTS', 'CREATE_ASSIGNMENT', 'VIEW_CARRIER'],
+    driver: ['VIEW_OWN_ASSIGNMENTS'],
+    platform_admin: ['ALL_PERMISSIONS'],
+    platform_support: ['VIEW_LOADS', 'VIEW_CARRIER', 'CREATE_NOTIFICATION']
+  };
+  doc.permissions = rolePermissions[doc.role] || [];
+});
+
+module.exports = mongoose.model('Membership', membershipSchema);

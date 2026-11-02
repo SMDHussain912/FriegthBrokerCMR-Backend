@@ -43,6 +43,142 @@ before(async () => {
       resolve();
     });
   });
+
+
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.ok(body.membership.id);
+    assert.equal(body.membership.userId, String(targetUser._id));
+    assert.equal(body.membership.companyId, String(company._id));
+    assert.equal(body.membership.role, 'broker');
+    assert.ok(body.membership.name);
+    assert.ok(body.membership.email);
+    assert.ok(body.membership.joinedAt);
+    assert.ok(body.membership.isActive);
+  });
+
+  it('ordinary member cannot add members', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${regularMember.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker' })
+    });
+    assert.equal(res.status, 403);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'Forbidden: insufficient role to add members');
+  });
+
+  it('non-member cannot add members', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${nonMemberUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker' })
+    });
+    assert.equal(res.status, 403);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'Forbidden: no active membership in this company');
+  });
+
+  it('unauthenticated request is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST'
+    });
+    assert.equal(res.status, 401);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'AUTH_REQUIRED');
+  });
+
+  it('invalid company ID returns 400', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/invalid-id/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker' })
+    });
+    assert.equal(res.status, 400);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'Invalid company ID format');
+  });
+
+  it('invalid user ID returns 400', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: 'invalid-id', role: 'broker' })
+    });
+    assert.equal(res.status, 400);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'Invalid user ID format');
+  });
+
+  it('nonexistent user returns 404', async () => {
+    const fakeUserId = new mongoose.Types.ObjectId();
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: fakeUserId, role: 'broker' })
+    });
+    assert.equal(res.status, 404);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'User not found');
+  });
+
+  it('invalid role for company type is rejected', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members?role=carrier_owner`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'carrier_owner' })
+    });
+    assert.equal(res.status, 403);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'Forbidden: cannot assign role carrier_owner');
+  });
+
+  it('duplicate membership is rejected', async () => {
+    await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker' })
+    });
+
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker' })
+    });
+    assert.equal(res.status, 409);
+
+    const body = await res.json();
+    assert.equal(body.success, false);
+    assert.equal(body.error, 'User already has a membership in this company');
+  });
+
+  it('client-supplied permissions are ignored', async () => {
+    const res = await fetch(`${baseUrl}/api/companies/${company._id}/members`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ownerUser.jwtToken}` },
+      body: JSON.stringify({ userId: targetUser._id, role: 'broker', permissions: ['VIEW_LOADS'] })
+    });
+    assert.equal(res.status, 201);
+
+    const body = await res.json();
+    assert.equal(body.success, true);
+    assert.equal(body.membership.role, 'broker');
+    assert.strictEqual(body.membership.permissions, undefined);
+  });
 });
 
 after(async () => {
