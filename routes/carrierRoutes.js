@@ -5,6 +5,28 @@ const Carrier = require('../models/Carrier');
 const { evaluateCarrierForLoad } = require('../services/vettingEngine');
 const { requireAuth, optionalAuth, requireRole } = require('../middleware/auth');
 const { requireCompanyContext } = require('../middleware/companyContext');
+const {
+  CarrierApiError,
+  mapCarrierError,
+  listCarriers,
+  createCarrier,
+  findCarrierForTenant,
+  updateCarrier,
+  archiveCarrier,
+  toPublicCarrier
+} = require('../services/carrierService');
+
+const handleCarrierError = (error, res, next) => {
+  const mappedError = mapCarrierError(error);
+  if (mappedError instanceof CarrierApiError) {
+    return res.status(mappedError.status).json({
+      success: false,
+      error: mappedError.message,
+      code: mappedError.code
+    });
+  }
+  return next(mappedError);
+};
 
 const assertObjectId = (value, label, res) => {
   if (!value || !mongoose.Types.ObjectId.isValid(String(value))) {
@@ -12,13 +34,6 @@ const assertObjectId = (value, label, res) => {
     return false;
   }
   return true;
-};
-
-/**
- * Escape regex special characters to prevent ReDoS.
- */
-const escapeRegex = (string) => {
-  return String(string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 };
 
 /**
@@ -31,65 +46,21 @@ const escapeRegex = (string) => {
  */
 router.get('/', optionalAuth, requireCompanyContext, async (req, res, next) => {
   try {
-    const { query, status } = req.query;
-    const filter = {};
-
-    if (req.isDemoMode) {
-      filter.isDemoData = true;
-    } else if (req.companyId && req.membership) {
-      filter.company = req.companyId;
-      filter.isDemoData = false;
-    } else {
-      return res.status(403).json({
-        success: false,
-        error: 'Forbidden: Verified company context required',
-        code: 'COMPANY_CONTEXT_REQUIRED'
-      });
-    }
-
-    if (query) {
-      const sanitized = escapeRegex(query.trim());
-      const queryFilter = [
-        { legalName: { $regex: sanitized, $options: 'i' } },
-        { dbaName: { $regex: sanitized, $options: 'i' } },
-        { dotNumber: { $regex: sanitized, $options: 'i' } },
-        { mcNumber: { $regex: sanitized, $options: 'i' } }
-      ];
-
-      filter.$or = queryFilter;
-    }
-
-    if (status) {
-      filter.overallStatus = String(status).toUpperCase();
-    }
-
-    const carriers = await Carrier.find(filter).sort({ legalName: 1 });
-    res.json({
-      success: true,
-      count: carriers.length,
-      carriers
-    });
+    const result = await listCarriers(req, req.query);
+    res.json(result);
   } catch (error) {
-    next(error);
+    handleCarrierError(error, res, next);
   }
 });
 
-/**
- * Helper to find carrier scoped to company or demo
- */
-async function findAuthorizedCarrier(carrierId, companyId, isDemoMode) {
-  if (isDemoMode) {
-    return Carrier.findOne({ _id: carrierId, isDemoData: true });
+router.post('/', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const carrier = await createCarrier(req, req.body);
+    return res.status(201).json({ success: true, carrier });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
   }
-  if (companyId) {
-    return Carrier.findOne({
-      _id: carrierId,
-      company: companyId,
-      isDemoData: false
-    });
-  }
-  return null;
-}
+});
 
 /**
  * @route   GET /api/carriers/:id
@@ -100,30 +71,14 @@ router.get('/:id', requireAuth, requireCompanyContext, async (req, res, next) =>
   try {
     if (!assertObjectId(req.params.id, 'Carrier ID', res)) { return; }
 
-    const carrier = await findAuthorizedCarrier(req.params.id, req.companyId, req.isDemoMode);
-
-    if (!carrier) {
-      // Check if carrier exists in another company to return proper 403 vs 404
-      const otherCarrier = await Carrier.findById(req.params.id);
-      if (otherCarrier) {
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Carrier does not belong to the active company',
-          code: 'FORBIDDEN_TENANT_ACCESS'
-        });
-      }
-      return res.status(404).json({
-        success: false,
-        error: `Carrier not found with ID: ${req.params.id}`
-      });
-    }
+    const carrier = await findCarrierForTenant(req, req.params.id);
 
     res.json({
       success: true,
-      carrier
+      carrier: toPublicCarrier(carrier)
     });
   } catch (error) {
-    next(error);
+    handleCarrierError(error, res, next);
   }
 });
 
@@ -136,22 +91,7 @@ router.get('/:id/vet', requireAuth, requireCompanyContext, async (req, res, next
   try {
     if (!assertObjectId(req.params.id, 'Carrier ID', res)) { return; }
 
-    const carrier = await findAuthorizedCarrier(req.params.id, req.companyId, req.isDemoMode);
-
-    if (!carrier) {
-      const otherCarrier = await Carrier.findById(req.params.id);
-      if (otherCarrier) {
-        return res.status(403).json({
-          success: false,
-          error: 'Forbidden: Carrier does not belong to the active company',
-          code: 'FORBIDDEN_TENANT_ACCESS'
-        });
-      }
-      return res.status(404).json({
-        success: false,
-        error: `Carrier not found with ID: ${req.params.id}`
-      });
-    }
+    const carrier = await findCarrierForTenant(req, req.params.id);
 
     // Default global baseline criteria (dry van, $100k standard cargo, $1M auto)
     const baselineLoad = {
@@ -174,7 +114,7 @@ router.get('/:id/vet', requireAuth, requireCompanyContext, async (req, res, next
       evaluation
     });
   } catch (error) {
-    next(error);
+    handleCarrierError(error, res, next);
   }
 });
 
@@ -212,23 +152,7 @@ router.patch(
         });
       }
 
-      const carrier = await findAuthorizedCarrier(
-        req.params.carrierId,
-        req.companyId,
-        req.isDemoMode
-      );
-
-      if (!carrier) {
-        const otherCarrier = await Carrier.findById(req.params.carrierId);
-        if (otherCarrier) {
-          return res.status(403).json({
-            success: false,
-            error: 'Forbidden: Carrier does not belong to the active company',
-            code: 'FORBIDDEN_TENANT_ACCESS'
-          });
-        }
-        return res.status(404).json({ success: false, error: 'Carrier not found' });
-      }
+      const carrier = await findCarrierForTenant(req, req.params.carrierId, { includeAudit: true });
 
       const policy = carrier.insurancePolicies.id(req.params.policyId);
       if (!policy) {
@@ -238,12 +162,41 @@ router.patch(
       policy.verifiedBy = req.user.email;
       policy.verifiedAt = new Date();
       policy.verificationNotes = notes;
+      carrier.auditLog = [...(carrier.auditLog || []), {
+        action: 'UPDATED',
+        actor: req.user.id,
+        changedFields: ['insurancePolicies.verificationStatus'],
+        occurredAt: new Date()
+      }].slice(-100);
       await carrier.save();
-      res.json({ success: true, policy });
+      const policyResult = policy.toObject();
+      delete policyResult.uploadedDocumentUri;
+      res.json({ success: true, policy: policyResult });
     } catch (error) {
-      next(error);
+      handleCarrierError(error, res, next);
     }
   }
 );
 
+/** @route PATCH /api/carriers/:id */
+router.patch('/:id', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.id, 'Carrier ID', res)) { return; }
+    const carrier = await updateCarrier(req, req.params.id, req.body);
+    return res.json({ success: true, carrier });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/** @route PATCH /api/carriers/:id/archive */
+router.patch('/:id/archive', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.id, 'Carrier ID', res)) { return; }
+    const carrier = await archiveCarrier(req, req.params.id, req.body);
+    return res.json({ success: true, carrier });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
 module.exports = router;

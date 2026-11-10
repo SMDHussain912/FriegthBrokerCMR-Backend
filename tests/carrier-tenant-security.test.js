@@ -28,6 +28,7 @@ let companyA, companyB, companyC;
 let membershipA1, membershipB1, membershipC1Inactive;
 let membershipB2;
 let carrierCompanyA, carrierCompanyB, demoCarrier;
+let createdCarrier;
 
 before(async () => {
   if (mongoose.connection.readyState !== 0) {
@@ -35,6 +36,7 @@ before(async () => {
   }
   await mongoose.connect(TEST_DB_URI);
   assertTestDatabase();
+  await Carrier.syncIndexes();
 
   // Create test users
   const passHash = await User.hashPassword('Password123!');
@@ -422,7 +424,229 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal(body.count, 0); // Correctly treated as literal string, no crash or hanging
   });
 
-  it('13. Carrier tenancy migration marks only reliably identified demo records', async () => {
+  it('13. Carrier creation validates required fields and derives ownership from the verified company', async () => {
+    const invalid = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({ legalName: 'Missing identifiers' })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, 'REQUIRED_FIELD');
+
+    const response = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({
+        dotNumber: ' 3333333 ',
+        mcNumber: ' mc-333333 ',
+        legalName: 'Created CRM Carrier',
+        dbaName: 'Created Carrier',
+        authorityGrantDate: '2022-05-01',
+        company: String(companyB._id),
+        isDemoData: true,
+        overallStatus: 'PASS'
+      })
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'INVALID_FIELDS');
+
+    const validResponse = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({
+        dotNumber: ' 3333333 ',
+        mcNumber: ' mc-333333 ',
+        legalName: 'Created CRM Carrier',
+        dbaName: 'Created Carrier',
+        authorityGrantDate: '2022-05-01',
+        contact: { email: 'OPS@EXAMPLE.COM' }
+      })
+    });
+    assert.equal(validResponse.status, 201);
+    const body = await validResponse.json();
+    createdCarrier = body.carrier;
+    assert.equal(createdCarrier.company, String(companyA._id));
+    assert.equal(createdCarrier.isDemoData, false);
+    assert.equal(createdCarrier.dotNumber, '3333333');
+    assert.equal(createdCarrier.mcNumber, 'MC-333333');
+    assert.equal(createdCarrier.contact.email, 'ops@example.com');
+    assert.equal(Object.prototype.hasOwnProperty.call(createdCarrier, 'auditLog'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(createdCarrier, 'createdBy'), false);
+
+    const detail = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}`, {
+      headers: {
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      }
+    });
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).carrier.legalName, 'Created CRM Carrier');
+  });
+
+  it('14. Duplicate DOT and MC identifiers conflict within a company', async () => {
+    for (const duplicate of [
+      { dotNumber: '3333333', mcNumber: 'MC-OTHER-333' },
+      { dotNumber: 'OTHER-333333', mcNumber: 'MC-333333' }
+    ]) {
+      const response = await fetch(`${baseUrl}/api/carriers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenUser1}`,
+          'X-Company-Id': String(companyA._id)
+        },
+        body: JSON.stringify({
+          ...duplicate,
+          legalName: 'Duplicate Carrier',
+          authorityGrantDate: '2020-01-01'
+        })
+      });
+      assert.equal(response.status, 409);
+      assert.equal((await response.json()).code, 'DUPLICATE_CARRIER_IDENTIFIER');
+    }
+  });
+
+  it('15. Carrier updates enforce tenant and role boundaries and keep audit private', async () => {
+    const crossCompany = await fetch(`${baseUrl}/api/carriers/${carrierCompanyA._id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser2}`,
+        'X-Company-Id': String(companyB._id)
+      },
+      body: JSON.stringify({ legalName: 'Unauthorized Update' })
+    });
+    assert.equal(crossCompany.status, 403);
+    assert.equal((await crossCompany.json()).code, 'FORBIDDEN_TENANT_ACCESS');
+
+    const roleDenied = await fetch(`${baseUrl}/api/carriers/${carrierCompanyB._id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyB._id)
+      },
+      body: JSON.stringify({ legalName: 'Compliance Cannot Edit CRM' })
+    });
+    assert.equal(roleDenied.status, 403);
+    assert.equal((await roleDenied.json()).code, 'FORBIDDEN_CARRIER_ROLE');
+
+    const protectedUpdate = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({ company: String(companyB._id), isDemoData: true, legalName: 'Spoofed' })
+    });
+    assert.equal(protectedUpdate.status, 400);
+    assert.equal((await protectedUpdate.json()).code, 'INVALID_FIELDS');
+
+    const updated = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({ legalName: 'Updated CRM Carrier' })
+    });
+    assert.equal(updated.status, 200);
+    const updatedBody = await updated.json();
+    assert.equal(updatedBody.carrier.legalName, 'Updated CRM Carrier');
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedBody.carrier, 'auditLog'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedBody.carrier, 'uploadedDocumentUri'), false);
+  });
+
+  it('16. Carrier list supports search, filters, sorting and pagination within tenant', async () => {
+    const response = await fetch(`${baseUrl}/api/carriers?query=Updated%20CRM&authorityStatus=ACTIVE&status=UNKNOWN&page=1&limit=1&sortBy=legalName&sortOrder=desc`, {
+      headers: {
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      }
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.count, 1);
+    assert.equal(body.pagination.page, 1);
+    assert.equal(body.pagination.limit, 1);
+    assert.equal(body.carriers[0].legalName, 'Updated CRM Carrier');
+  });
+
+  it('17. Demo CRUD and missing-context writes are denied', async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dotNumber: '4444444', mcNumber: 'MC-444444', legalName: 'Unauthenticated', authorityGrantDate: '2021-01-01' })
+    });
+    assert.equal(unauthenticated.status, 401);
+
+    const demoWrite = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Demo-Mode': 'true'
+      },
+      body: JSON.stringify({ dotNumber: '4444444', mcNumber: 'MC-444444', legalName: 'Demo Write', authorityGrantDate: '2021-01-01' })
+    });
+    assert.equal(demoWrite.status, 403);
+    assert.equal((await demoWrite.json()).code, 'DEMO_READ_ONLY');
+
+    const missingContext = await fetch(`${baseUrl}/api/carriers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tokenUser1}` },
+      body: JSON.stringify({ dotNumber: '4444444', mcNumber: 'MC-444444', legalName: 'No Context', authorityGrantDate: '2021-01-01' })
+    });
+    assert.equal(missingContext.status, 403);
+    assert.equal((await missingContext.json()).code, 'COMPANY_CONTEXT_REQUIRED');
+  });
+
+  it('18. Archive preserves the carrier and audit history but hides it from ordinary reads', async () => {
+    const archived = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}/archive`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      },
+      body: JSON.stringify({ reason: 'Duplicate CRM record' })
+    });
+    assert.equal(archived.status, 200);
+    const archivedBody = await archived.json();
+    assert.equal(archivedBody.carrier.isArchived, true);
+    assert.equal(Object.prototype.hasOwnProperty.call(archivedBody.carrier, 'archiveReason'), false);
+
+    const stored = await Carrier.findById(createdCarrier._id).select('+auditLog');
+    assert.ok(stored);
+    assert.equal(stored.isArchived, true);
+    assert.deepEqual(stored.auditLog.map((entry) => entry.action), ['CREATED', 'UPDATED', 'ARCHIVED']);
+    assert.equal(stored.auditLog[2].reason, 'Duplicate CRM record');
+
+    const hidden = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}`, {
+      headers: {
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      }
+    });
+    assert.equal(hidden.status, 404);
+    assert.equal((await Carrier.findById(createdCarrier._id)).isArchived, true);
+  });
+
+  it('19. Carrier tenancy migration marks only reliably identified demo records', async () => {
     const demoDot = 'DEMO-' + new mongoose.Types.ObjectId().toString().slice(-7);
     const unownedDot = new mongoose.Types.ObjectId().toString().slice(-7);
     const companyDot = new mongoose.Types.ObjectId().toString().slice(-7);

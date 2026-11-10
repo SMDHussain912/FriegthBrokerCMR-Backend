@@ -62,6 +62,26 @@ const insurancePolicySubSchema = new mongoose.Schema({
   }
 }, { _id: true, timestamps: true });
 
+const carrierAuditSubSchema = new mongoose.Schema({
+  action: {
+    type: String,
+    enum: ['CREATED', 'UPDATED', 'ARCHIVED'],
+    required: true
+  },
+  actor: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  changedFields: [{ type: String }],
+  reason: String,
+  occurredAt: {
+    type: Date,
+    default: Date.now,
+    required: true
+  }
+}, { _id: false });
+
 const carrierSchema = new mongoose.Schema({
   company: {
     type: mongoose.Schema.Types.ObjectId,
@@ -123,6 +143,28 @@ const carrierSchema = new mongoose.Schema({
     lastFmcsaCheck: { type: Date, default: Date.now }
   },
   insurancePolicies: [insurancePolicySubSchema],
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  isArchived: {
+    type: Boolean,
+    default: false
+  },
+  archivedAt: Date,
+  archivedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  auditLog: {
+    type: [carrierAuditSubSchema],
+    default: [],
+    select: false
+  },
   fraudSignals: {
     domainMatchVerified: { type: Boolean, default: true },
     virtualOfficeDetected: { type: Boolean, default: false }
@@ -148,6 +190,7 @@ carrierSchema.index(
   { company: 1, mcNumber: 1 },
   { unique: true, partialFilterExpression: { company: { $exists: true, $type: "objectId" }, isDemoData: false } }
 );
+carrierSchema.index({ company: 1, isDemoData: 1, isArchived: 1, legalName: 1 });
 
 // Global unique index for demo carriers (company is null/undefined)
 carrierSchema.index(
