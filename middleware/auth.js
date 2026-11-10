@@ -43,35 +43,38 @@ const signToken = (user) => jwt.sign(
   { expiresIn: '12h' }
 );
 
-const requireAuth = async (req, res, next) => {
+const authenticateRequest = async (req, res, next, optional) => {
+  const header = req.headers.authorization || '';
+  if (!header && optional) {
+    return next();
+  }
+  const parts = header.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer' || !parts[1]) {
+    return res.status(401).json({
+      success: false,
+      error: 'Authentication required: missing Bearer token',
+      code: 'AUTH_REQUIRED'
+    });
+  }
+
+  let payload;
+  let secret;
   try {
-    const header = req.headers.authorization || '';
-    const parts = header.split(' ');
-    if (parts.length !== 2 || parts[0] !== 'Bearer' || !parts[1]) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required: missing Bearer token',
-        code: 'AUTH_REQUIRED'
-      });
-    }
-    let payload;
-    let secret;
-    try {
-      // Resolve the secret BEFORE verifying: a production misconfiguration
-      // must fail loudly (500) rather than masquerade as an invalid token.
-      secret = getJwtSecret();
-    } catch (secretError) {
-      return next(secretError);
-    }
-    try {
-      payload = jwt.verify(parts[1], secret);
-    } catch (e) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired token',
-        code: 'INVALID_TOKEN'
-      });
-    }
+    secret = getJwtSecret();
+  } catch (secretError) {
+    return next(secretError);
+  }
+  try {
+    payload = jwt.verify(parts[1], secret);
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid or expired token',
+      code: 'INVALID_TOKEN'
+    });
+  }
+
+  try {
     const user = await User.findById(payload.sub);
     if (!user) {
       return res.status(401).json({
@@ -92,6 +95,12 @@ const requireAuth = async (req, res, next) => {
   }
 };
 
+const requireAuth = async (req, res, next) => {
+  return authenticateRequest(req, res, next, false);
+};
+
+const optionalAuth = (req, res, next) => authenticateRequest(req, res, next, true);
+
 // Role gate: only listed roles may proceed (roles from req.user, never body)
 const requireRole = (...allowedRoles) => (req, res, next) => {
   const role = req.user && req.user.role;
@@ -105,4 +114,4 @@ const requireRole = (...allowedRoles) => (req, res, next) => {
   return next();
 };
 
-module.exports = { requireAuth, requireRole, signToken, getJwtSecret, DEV_FALLBACK_SECRET };
+module.exports = { requireAuth, optionalAuth, requireRole, signToken, getJwtSecret, DEV_FALLBACK_SECRET };

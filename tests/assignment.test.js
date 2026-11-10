@@ -28,9 +28,10 @@ let brokerToken;
 let complianceToken;
 let adminToken;
 
-const reqJSON = async (method, url, body, token) => {
+const reqJSON = async (method, url, body, token, extraHeaders = {}) => {
   const headers = { 'Content-Type': 'application/json' };
   if (token) { headers.Authorization = 'Bearer ' + token; }
+  Object.assign(headers, extraHeaders);
   const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
@@ -247,10 +248,10 @@ describe('Carrier Assignment Workflow (remediated)', () => {
     const policyId = String(apex.insurancePolicies[0]._id);
     const denied = await reqJSON('PATCH', baseUrl + '/api/carriers/' + apex._id + '/policies/' + policyId + '/verify', { status: 'VERIFIED', verifiedBy: 'attacker@evil.local' }, brokerToken);
     assert.equal(denied.res.status, 403);
-    const allowed = await reqJSON('PATCH', baseUrl + '/api/carriers/' + apex._id + '/policies/' + policyId + '/verify', { status: 'VERIFIED', verificationNotes: 'Called producer; endorsement confirmed (Demo test)', verifiedBy: 'attacker@evil.local' }, complianceToken);
+    const allowed = await reqJSON('PATCH', baseUrl + '/api/carriers/' + apex._id + '/policies/' + policyId + '/verify', { status: 'VERIFIED', verificationNotes: 'Called producer; endorsement confirmed (Demo test)', verifiedBy: 'attacker@evil.local' }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.equal(allowed.res.status, 200);
     assert.equal(allowed.data.policy.verifiedBy, 'compliance.demo@ricoz.local');
     // restore demo state
-    await reqJSON('PATCH', baseUrl + '/api/carriers/' + apex._id + '/policies/' + policyId + '/verify', { status: 'VERIFIED', verificationNotes: 'restored' }, complianceToken);
+    await reqJSON('PATCH', baseUrl + '/api/carriers/' + apex._id + '/policies/' + policyId + '/verify', { status: 'VERIFIED', verificationNotes: 'restored' }, complianceToken, { 'X-Demo-Mode': 'true' });
   });
 });

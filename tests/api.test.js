@@ -209,7 +209,7 @@ describe('API Endpoint Integration Tests', () => {
   });
 
   it('GET /api/carriers returns list of demo carriers', async () => {
-    const res = await fetch(`${baseUrl}/api/carriers`);
+    const res = await fetch(`${baseUrl}/api/carriers?demo=true`);
     assert.equal(res.status, 200);
 
     const body = await res.json();

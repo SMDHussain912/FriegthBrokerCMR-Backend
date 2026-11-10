@@ -60,10 +60,12 @@ app.use(errorHandler);
 const initializeDatabaseState = async (options = {}) => {
   const { ensureAssignmentIndexes } = require('./services/assignmentIndexInitializer');
   const { reconcileOrphanedAssignments } = require('./services/assignmentRecovery');
+  const { reconcileCarrierTenancy } = require('./services/carrierMigration');
 
   const indexResult = await ensureAssignmentIndexes(options);
   const recoveryResult = await reconcileOrphanedAssignments(options);
-  return { indexResult, recoveryResult };
+  const carrierMigrationResult = await reconcileCarrierTenancy(options);
+  return { indexResult, recoveryResult, carrierMigrationResult };
 };
 
 module.exports = app;

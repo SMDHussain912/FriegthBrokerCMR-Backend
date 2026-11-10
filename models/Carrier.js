@@ -63,18 +63,22 @@ const insurancePolicySubSchema = new mongoose.Schema({
 }, { _id: true, timestamps: true });
 
 const carrierSchema = new mongoose.Schema({
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    required: function() {
+      return !this.isDemoData;
+    }
+  },
   dotNumber: {
     type: String,
     required: [true, 'USDOT number is required'],
-    unique: true,
-    trim: true,
-    index: true
+    trim: true
   },
   mcNumber: {
     type: String,
     required: [true, 'MC/FF number is required'],
-    trim: true,
-    index: true
+    trim: true
   },
   legalName: {
     type: String,
@@ -126,7 +130,7 @@ const carrierSchema = new mongoose.Schema({
   // Clearly labelled demo data identifier
   isDemoData: {
     type: Boolean,
-    default: true
+    default: false
   },
   overallStatus: {
     type: String,
@@ -134,5 +138,25 @@ const carrierSchema = new mongoose.Schema({
     default: 'UNKNOWN'
   }
 }, { timestamps: true });
+
+// Scoped compound unique index per company for real carriers
+carrierSchema.index(
+  { company: 1, dotNumber: 1 },
+  { unique: true, partialFilterExpression: { company: { $exists: true, $type: "objectId" }, isDemoData: false } }
+);
+carrierSchema.index(
+  { company: 1, mcNumber: 1 },
+  { unique: true, partialFilterExpression: { company: { $exists: true, $type: "objectId" }, isDemoData: false } }
+);
+
+// Global unique index for demo carriers (company is null/undefined)
+carrierSchema.index(
+  { dotNumber: 1 },
+  { unique: true, partialFilterExpression: { isDemoData: true } }
+);
+carrierSchema.index(
+  { mcNumber: 1 },
+  { unique: true, partialFilterExpression: { isDemoData: true } }
+);
 
 module.exports = mongoose.model('Carrier', carrierSchema);
