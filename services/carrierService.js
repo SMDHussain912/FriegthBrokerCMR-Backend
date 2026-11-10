@@ -55,6 +55,21 @@ function assertCompanyRole(req, action) {
   }
 }
 
+function getCarrierCapabilities(req) {
+  if (req.isDemoMode || !req.membership) {
+    return { canCreate: false, canManage: false };
+  }
+  const isCarrierCompany = req.company?.type === 'carrier';
+  const role = req.membership.role;
+  const canCreate = isCarrierCompany
+    ? ['carrier_owner', 'carrier_admin'].includes(role)
+    : ['broker_owner', 'broker_admin', 'broker'].includes(role);
+  const canManage = isCarrierCompany
+    ? ['carrier_owner', 'carrier_admin'].includes(role)
+    : ['broker_owner', 'broker_admin'].includes(role);
+  return { canCreate, canManage };
+}
+
 function rejectUnknownFields(body, allowedFields) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new CarrierApiError(400, 'INVALID_BODY', 'Request body must be a JSON object.');
@@ -302,6 +317,7 @@ async function archiveCarrier(req, carrierId, body) {
 module.exports = {
   CarrierApiError,
   mapCarrierError,
+  getCarrierCapabilities,
   listCarriers,
   createCarrier,
   findCarrierForTenant,

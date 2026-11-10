@@ -424,7 +424,33 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal(body.count, 0); // Correctly treated as literal string, no crash or hanging
   });
 
-  it('13. Carrier creation validates required fields and derives ownership from the verified company', async () => {
+  it('13. Carrier capabilities reflect the verified membership and demo is read-only', async () => {
+    const ownerResponse = await fetch(`${baseUrl}/api/carriers/context`, {
+      headers: {
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyA._id)
+      }
+    });
+    assert.equal(ownerResponse.status, 200);
+    assert.deepEqual((await ownerResponse.json()).capabilities, { canCreate: true, canManage: true });
+
+    const restrictedResponse = await fetch(`${baseUrl}/api/carriers/context`, {
+      headers: {
+        Authorization: `Bearer ${tokenUser1}`,
+        'X-Company-Id': String(companyB._id)
+      }
+    });
+    assert.equal(restrictedResponse.status, 200);
+    assert.deepEqual((await restrictedResponse.json()).capabilities, { canCreate: false, canManage: false });
+
+    const demoResponse = await fetch(`${baseUrl}/api/carriers/context`, {
+      headers: { Authorization: `Bearer ${tokenUser1}`, 'X-Demo-Mode': 'true' }
+    });
+    assert.equal(demoResponse.status, 200);
+    assert.deepEqual((await demoResponse.json()).capabilities, { canCreate: false, canManage: false });
+  });
+
+  it('14. Carrier creation validates required fields and derives ownership from the verified company', async () => {
     const invalid = await fetch(`${baseUrl}/api/carriers`, {
       method: 'POST',
       headers: {
@@ -495,7 +521,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal((await detail.json()).carrier.legalName, 'Created CRM Carrier');
   });
 
-  it('14. Duplicate DOT and MC identifiers conflict within a company', async () => {
+  it('15. Duplicate DOT and MC identifiers conflict within a company', async () => {
     for (const duplicate of [
       { dotNumber: '3333333', mcNumber: 'MC-OTHER-333' },
       { dotNumber: 'OTHER-333333', mcNumber: 'MC-333333' }
@@ -518,7 +544,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     }
   });
 
-  it('15. Carrier updates enforce tenant and role boundaries and keep audit private', async () => {
+  it('16. Carrier updates enforce tenant and role boundaries and keep audit private', async () => {
     const crossCompany = await fetch(`${baseUrl}/api/carriers/${carrierCompanyA._id}`, {
       method: 'PATCH',
       headers: {
@@ -571,7 +597,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal(Object.prototype.hasOwnProperty.call(updatedBody.carrier, 'uploadedDocumentUri'), false);
   });
 
-  it('16. Carrier list supports search, filters, sorting and pagination within tenant', async () => {
+  it('17. Carrier list supports search, filters, sorting and pagination within tenant', async () => {
     const response = await fetch(`${baseUrl}/api/carriers?query=Updated%20CRM&authorityStatus=ACTIVE&status=UNKNOWN&page=1&limit=1&sortBy=legalName&sortOrder=desc`, {
       headers: {
         Authorization: `Bearer ${tokenUser1}`,
@@ -586,7 +612,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal(body.carriers[0].legalName, 'Updated CRM Carrier');
   });
 
-  it('17. Demo CRUD and missing-context writes are denied', async () => {
+  it('18. Demo CRUD and missing-context writes are denied', async () => {
     const unauthenticated = await fetch(`${baseUrl}/api/carriers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -615,7 +641,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal((await missingContext.json()).code, 'COMPANY_CONTEXT_REQUIRED');
   });
 
-  it('18. Archive preserves the carrier and audit history but hides it from ordinary reads', async () => {
+  it('19. Archive preserves the carrier and audit history but hides it from ordinary reads', async () => {
     const archived = await fetch(`${baseUrl}/api/carriers/${createdCarrier._id}/archive`, {
       method: 'PATCH',
       headers: {
@@ -646,7 +672,7 @@ describe('Carrier Tenant Isolation Security Tests', () => {
     assert.equal((await Carrier.findById(createdCarrier._id)).isArchived, true);
   });
 
-  it('19. Carrier tenancy migration marks only reliably identified demo records', async () => {
+  it('20. Carrier tenancy migration marks only reliably identified demo records', async () => {
     const demoDot = 'DEMO-' + new mongoose.Types.ObjectId().toString().slice(-7);
     const unownedDot = new mongoose.Types.ObjectId().toString().slice(-7);
     const companyDot = new mongoose.Types.ObjectId().toString().slice(-7);

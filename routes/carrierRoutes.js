@@ -8,6 +8,7 @@ const { requireCompanyContext } = require('../middleware/companyContext');
 const {
   CarrierApiError,
   mapCarrierError,
+  getCarrierCapabilities,
   listCarriers,
   createCarrier,
   findCarrierForTenant,
@@ -60,6 +61,14 @@ router.post('/', requireAuth, requireCompanyContext, async (req, res, next) => {
   } catch (error) {
     return handleCarrierError(error, res, next);
   }
+});
+
+router.get('/context', requireAuth, requireCompanyContext, (req, res) => {
+  return res.json({
+    success: true,
+    demoMode: Boolean(req.isDemoMode),
+    capabilities: getCarrierCapabilities(req)
+  });
 });
 
 /**
