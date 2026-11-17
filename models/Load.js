@@ -1,12 +1,27 @@
 const mongoose = require('mongoose');
 
 const loadSchema = new mongoose.Schema({
+  company: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Company',
+    index: true
+  },
+  ownershipResolved: {
+    type: Boolean,
+    default: false
+  },
+  ownershipResolvedAt: {
+    type: Date
+  },
+  ownershipResolution: {
+    type: String,
+    enum: ['DEMO', 'MIGRATED', 'UNRESOLVED', 'MANUAL', 'CREATED'],
+    default: 'UNRESOLVED'
+  },
   loadNumber: {
     type: String,
     required: [true, 'Load number is required'],
-    unique: true,
-    trim: true,
-    index: true
+    trim: true
   },
   shipperName: {
     type: String,
@@ -45,6 +60,29 @@ const loadSchema = new mongoose.Schema({
       message: 'Target temperature is required for refrigerated (REEFER) freight'
     }
   },
+  customerRate: {
+    type: Number,
+    min: [0, 'Customer rate cannot be negative']
+  },
+  carrierCost: {
+    type: Number,
+    min: [0, 'Carrier cost cannot be negative']
+  },
+  accessorials: {
+    type: Number,
+    min: [0, 'Accessorials cannot be negative'],
+    default: 0
+  },
+  currency: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    default: 'USD'
+  },
+  notes: {
+    type: String,
+    trim: true
+  },
   declaredCargoValue: {
     type: Number,
     required: [true, 'Declared cargo value is required'],
@@ -78,11 +116,24 @@ const loadSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'CarrierAssignment'
   },
-  // Clearly labelled demo data identifier
   isDemoData: {
     type: Boolean,
-    default: true
+    default: false
   }
 }, { timestamps: true });
+
+// Demo loads: globally unique load numbers within demo dataset.
+loadSchema.index(
+  { loadNumber: 1 },
+  { unique: true, name: 'loadNumber_demo_unique', partialFilterExpression: { isDemoData: true } }
+);
+// Company loads: unique per company when ownership is resolved.
+loadSchema.index(
+  { company: 1, loadNumber: 1 },
+  { unique: true, name: 'company_loadNumber_unique', partialFilterExpression: { company: { $exists: true, $type: 'objectId' }, isDemoData: false } }
+);
+loadSchema.index({ company: 1, status: 1, createdAt: -1 });
+loadSchema.index({ isDemoData: 1, status: 1, createdAt: -1 });
+loadSchema.index({ ownershipResolved: 1, isDemoData: 1, company: 1 });
 
 module.exports = mongoose.model('Load', loadSchema);

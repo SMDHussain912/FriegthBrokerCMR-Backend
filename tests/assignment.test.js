@@ -51,7 +51,9 @@ const createReeferLoad = async (tag) => {
     declaredCargoValue: 200000,
     loadRequirements: { minAuthorityAgeDays: 90, minAutoLiability: 1000000, requireReeferEndorsement: true, disallowConditionalSafety: true, maxUnsafeDrivingPercentile: 75 },
     status: 'POSTED',
-    isDemoData: true
+    isDemoData: true,
+    ownershipResolved: true,
+    ownershipResolution: 'DEMO'
   });
 };
 
@@ -84,7 +86,11 @@ before(async () => {
 });
 
 after(async () => {
-  if (server) { await new Promise((resolve) => server.close(resolve)); }
+  if (server) {
+    if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
   assertTestDatabase();
   await Carrier.deleteMany({ isDemoData: true });
   await Load.deleteMany({ isDemoData: true });
@@ -100,7 +106,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('1. assigns a PASS carrier; identity stamped from JWT, snapshot complete', async () => {
     const load = await createReeferLoad('PASS');
     const carrier = await Carrier.findOne({ dotNumber: '2849102' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 200);
     assert.equal(data.assignment.assignmentDecision, 'APPROVED');
     assert.equal(data.assignment.ruleVersion, '1.0.0');
@@ -119,7 +125,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('2. rejects FAIL carrier (cargo deficit); load stays POSTED, REJECTED snapshot kept', async () => {
     const load = await createReeferLoad('FAIL');
     const carrier = await Carrier.findOne({ dotNumber: '3109281' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 400);
     assert.equal(data.overallStatus, 'FAIL');
     const snap = await CarrierAssignment.findById(data.auditSnapshotId);
@@ -129,7 +135,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('3. blocks UNKNOWN (missing evidence) without override', async () => {
     const load = await createReeferLoad('UNKNOWN');
     const carrier = await Carrier.findOne({ dotNumber: '4019281' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 400);
     assert.equal(data.overallStatus, 'UNKNOWN');
     assert.equal((await Load.findById(load._id)).status, 'POSTED');
@@ -137,7 +143,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('4. blocks stale/expired evidence without override', async () => {
     const load = await createReeferLoad('STALE');
     const carrier = await Carrier.findOne({ dotNumber: '2701928' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 400);
     assert.ok(['FAIL', 'NEEDS_REVIEW', 'UNKNOWN'].indexOf(data.overallStatus) !== -1);
     assert.equal((await Load.findById(load._id)).status, 'POSTED');
@@ -145,7 +151,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('5. blocks conflicting evidence without override', async () => {
     const load = await createReeferLoad('CONFLICT');
     const carrier = await Carrier.findOne({ dotNumber: '3219401' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 400);
     assert.equal(data.overallStatus, 'NEEDS_REVIEW');
     assert.ok((data.failedChecks || []).some((c) => c.ruleKey === 'EVIDENCE_CONSISTENCY'));
@@ -153,18 +159,18 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('6. C1: forged compliance role in body is ignored; broker override still 403 + unauthenticated 401', async () => {
     const load = await createReeferLoad('FORGE');
     const carrier = await Carrier.findOne({ dotNumber: '3109281' });
-    const forged = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), actorRole: 'compliance_officer', role: 'admin', authorizedBy: 'attacker@evil.local', overrideReason: 'Forged override attempt (Demo test)', allowOverride: true }, brokerToken);
+    const forged = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), actorRole: 'compliance_officer', role: 'admin', authorizedBy: 'attacker@evil.local', overrideReason: 'Forged override attempt (Demo test)', allowOverride: true }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(forged.res.status, 403);
     assert.equal(forged.data.code, 'UNAUTHORIZED_OVERRIDE');
     assert.equal((await Load.findById(load._id)).status, 'POSTED');
-    const anon = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() });
+    const anon = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString() }, undefined, { 'X-Demo-Mode': 'true' });
     assert.equal(anon.res.status, 401);
     assert.equal(anon.data.code, 'AUTH_REQUIRED');
   });
   it('7. compliance override succeeds; authorizer stamped from JWT, spoofed body identity ignored', async () => {
     const load = await createReeferLoad('OVERRIDE');
     const carrier = await Carrier.findOne({ dotNumber: '3109281' });
-    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), overrideReason: 'Shipper accepted gap coverage in writing (Demo)', authorizedBy: 'attacker@evil.local', allowOverride: true }, complianceToken);
+    const { res, data } = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), overrideReason: 'Shipper accepted gap coverage in writing (Demo)', authorizedBy: 'attacker@evil.local', allowOverride: true }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 200);
     assert.equal(data.assignment.assignmentDecision, 'OVERRIDDEN');
     assert.equal(data.assignment.overrideDetails.authorizedBy, 'compliance.demo@ricoz.local');
@@ -175,11 +181,11 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('8. short/missing override reason rejected; override on PASS rejected', async () => {
     const load = await createReeferLoad('NOREASON');
     const carrier = await Carrier.findOne({ dotNumber: '3109281' });
-    const short = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), overrideReason: 'short' }, complianceToken);
+    const short = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: carrier._id.toString(), overrideReason: 'short' }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.ok([400].indexOf(short.res.status) !== -1);
     const passLoad = await createReeferLoad('PASSOVR');
     const apex = await Carrier.findOne({ dotNumber: '2849102' });
-    const needless = await reqJSON('POST', baseUrl + '/api/loads/' + passLoad._id + '/assign', { carrierId: apex._id.toString(), overrideReason: 'Needless override attempt here (Demo)' }, complianceToken);
+    const needless = await reqJSON('POST', baseUrl + '/api/loads/' + passLoad._id + '/assign', { carrierId: apex._id.toString(), overrideReason: 'Needless override attempt here (Demo)' }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.equal(needless.res.status, 400);
     assert.equal(needless.data.code, 'OVERRIDE_NOT_APPLICABLE');
   });
@@ -187,7 +193,7 @@ describe('Carrier Assignment Workflow (remediated)', () => {
     const load = await createReeferLoad('RACE');
     const carrier = await Carrier.findOne({ dotNumber: '2849102' });
     const payload = { carrierId: carrier._id.toString() };
-    const mk = () => reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken);
+    const mk = () => reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken, { 'X-Demo-Mode': 'true' });
     const [a, b] = await Promise.all([mk(), mk()]);
     const statuses = [a.res.status, b.res.status].sort();
     assert.deepEqual(statuses, [200, 409]);
@@ -200,11 +206,11 @@ describe('Carrier Assignment Workflow (remediated)', () => {
   it('10. H2: assignment getter returns ACTIVE approval, counts REJECTED attempts', async () => {
     const load = await createReeferLoad('HISTORY');
     const bad = await Carrier.findOne({ dotNumber: '3109281' });
-    const r1 = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: bad._id.toString() }, brokerToken);
+    const r1 = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: bad._id.toString() }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(r1.res.status, 400);
-    const r2 = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: bad._id.toString(), overrideReason: 'Shipper accepted gap coverage in writing (Demo)' }, complianceToken);
+    const r2 = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: bad._id.toString(), overrideReason: 'Shipper accepted gap coverage in writing (Demo)' }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.equal(r2.res.status, 200);
-    const g = await reqJSON('GET', baseUrl + '/api/loads/' + load._id + '/assignment', undefined, brokerToken);
+    const g = await reqJSON('GET', baseUrl + '/api/loads/' + load._id + '/assignment', undefined, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(g.res.status, 200);
     assert.equal(g.data.snapshot.assignmentDecision, 'OVERRIDDEN');
     assert.equal(String(g.data.snapshot._id), String((await Load.findById(load._id)).auditSnapshotId));
@@ -228,21 +234,27 @@ describe('Carrier Assignment Workflow (remediated)', () => {
     assert.equal(fresh.auditSnapshotId || null, null);
   });
   it('12. M1: invalid ObjectIds rejected with INVALID_ID', async () => {
-    const badLoad = await reqJSON('POST', baseUrl + '/api/loads/not-an-id/assign', { carrierId: 'also-bad' }, brokerToken);
+    const badLoad = await reqJSON('POST', baseUrl + '/api/loads/not-an-id/assign', { carrierId: 'also-bad' }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(badLoad.res.status, 400);
     assert.equal(badLoad.data.code, 'INVALID_ID');
     const load = await createReeferLoad('BADID');
-    const badCarrier = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: 'nope' }, brokerToken);
+    const badCarrier = await reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', { carrierId: 'nope' }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(badCarrier.res.status, 400);
     assert.equal(badCarrier.data.code, 'INVALID_ID');
-    const g = await reqJSON('GET', baseUrl + '/api/loads/bogus/assignment', undefined, brokerToken);
+    const g = await reqJSON('GET', baseUrl + '/api/loads/bogus/assignment', undefined, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(g.res.status, 400);
   });
-  it('13. H3: load creation strips assignment-linkage + verify endpoint is compliance-only with JWT stamp', async () => {
+  it('13. H3: load creation rejects client-supplied protected/ownership fields and verify endpoint is compliance-only with JWT stamp', async () => {
     const apex = await Carrier.findOne({ dotNumber: '2849102' });
-    const created = await reqJSON('POST', baseUrl + '/api/loads', { loadNumber: 'TEST-SPOOF-' + Date.now(), shipperName: 'S (Demo)', origin: { city: 'A', state: 'CA' }, destination: { city: 'B', state: 'IL' }, commodity: 'X (Demo)', equipmentType: 'DRY_VAN', declaredCargoValue: 5000, status: 'ASSIGNED', assignedCarrier: apex._id.toString(), auditSnapshotId: apex._id.toString() }, brokerToken);
+    const rejected = await reqJSON('POST', baseUrl + '/api/loads', { loadNumber: 'TEST-SPOOF-' + Date.now(), shipperName: 'S (Demo)', origin: { city: 'A', state: 'CA' }, destination: { city: 'B', state: 'IL' }, commodity: 'X (Demo)', equipmentType: 'DRY_VAN', declaredCargoValue: 5000, status: 'ASSIGNED', assignedCarrier: apex._id.toString(), auditSnapshotId: apex._id.toString(), company: '000000000000000000000000', isDemoData: false }, brokerToken, { 'X-Demo-Mode': 'true' });
+    assert.equal(rejected.res.status, 400);
+    assert.equal(rejected.data.code, 'INVALID_FIELDS');
+
+    const created = await reqJSON('POST', baseUrl + '/api/loads', { loadNumber: 'TEST-SPOOF-' + Date.now(), shipperName: 'S (Demo)', origin: { city: 'A', state: 'CA' }, destination: { city: 'B', state: 'IL' }, commodity: 'X (Demo)', equipmentType: 'DRY_VAN', declaredCargoValue: 5000 }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(created.res.status, 201);
     assert.equal(created.data.load.status, 'POSTED');
+    assert.equal(created.data.load.isDemoData, true);
+    assert.equal(created.data.load.ownershipResolved, true);
     assert.equal(created.data.load.assignedCarrier || null, null);
     assert.equal(created.data.load.auditSnapshotId || null, null);
     const policyId = String(apex.insurancePolicies[0]._id);

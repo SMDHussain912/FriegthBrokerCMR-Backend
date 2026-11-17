@@ -34,8 +34,7 @@ const membershipSchema = new mongoose.Schema({
       message: 'Invalid permission'
     }
   },
-  timestamps: true
-});
+}, { timestamps: true });
 
 membershipSchema.index({ user: 1, company: 1 }, { unique: true });
 

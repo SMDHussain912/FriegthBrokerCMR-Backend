@@ -2,8 +2,13 @@ const express = require('express');
 const morgan = require('morgan');
 const healthRoutes = require('./routes/healthRoutes');
 const carrierRoutes = require('./routes/carrierRoutes');
+const documentRoutes = require('./routes/documentRoutes');
+const companyRoutes = require('./routes/companyRoutes');
 const loadRoutes = require('./routes/loadRoutes');
+const vettingRoutes = require('./routes/vettingRoutes');
 const authRoutes = require('./routes/authRoutes');
+const crmRoutes = require('./routes/crmRoutes');
+const tmsRoutes = require('./routes/tmsRoutes');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -39,8 +44,13 @@ app.use((req, res, next) => {
 // Mount Routes
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/companies', companyRoutes);
 app.use('/api/carriers', carrierRoutes);
+app.use('/api/carriers', documentRoutes);
 app.use('/api/loads', loadRoutes);
+app.use('/api/vetting', vettingRoutes);
+app.use('/api/crm', crmRoutes);
+app.use('/api/tms', tmsRoutes);
 
 // Catch 404 & forward to error handler
 app.use(notFound);

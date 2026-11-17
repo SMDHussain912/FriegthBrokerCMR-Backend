@@ -43,8 +43,8 @@ let brokerToken;
 let complianceToken;
 let adminToken;
 
-const reqJSON = async (method, url, body, token) => {
-  const headers = { 'Content-Type': 'application/json' };
+const reqJSON = async (method, url, body, token, extraHeaders = {}) => {
+  const headers = { 'Content-Type': 'application/json', ...extraHeaders };
   if (token) { headers.Authorization = 'Bearer ' + token; }
   const res = await fetch(url, {
     method,
@@ -75,7 +75,10 @@ const createReeferLoad = async (tag, overrides = {}) => {
       maxUnsafeDrivingPercentile: 75
     },
     status: 'POSTED',
-    isDemoData: true
+    isDemoData: true,
+    ownershipResolved: true,
+    ownershipResolution: 'DEMO',
+    ownershipResolvedAt: new Date()
   }, overrides));
 };
 
@@ -131,7 +134,11 @@ before(async () => {
 });
 
 after(async () => {
-  if (server) { await new Promise((resolve) => server.close(resolve)); }
+  if (server) {
+    if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
   assertTestDatabase();
   // The connection is closed first: Mongoose's background model init would
   // otherwise re-create the collections right after the drop.
@@ -592,8 +599,8 @@ describe('Concurrent assignment safety', () => {
     const payload = { carrierId: carrier._id.toString() };
 
     const results = await Promise.all([
-      reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken),
-      reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken)
+      reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken, { 'X-Demo-Mode': 'true' }),
+      reqJSON('POST', baseUrl + '/api/loads/' + load._id + '/assign', payload, brokerToken, { 'X-Demo-Mode': 'true' })
     ]);
     const statuses = results.map((r) => r.res.status).sort();
     assert.deepEqual(statuses, [200, 409], 'exactly one winner, one conflict');
@@ -617,7 +624,7 @@ describe('Concurrent assignment safety', () => {
       role: 'admin',
       authorizedBy: 'attacker@evil.local',
       allowOverride: true
-    }, brokerToken);
+    }, brokerToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 200);
     assert.equal(data.assignment.assignedBy, 'broker.res@ricoz.local');
     assert.equal(data.assignment.actorRole, 'broker');
@@ -634,7 +641,7 @@ describe('Concurrent assignment safety', () => {
       carrierId: carrier._id.toString(),
       overrideReason: 'Needless override attempt here (Demo)',
       allowOverride: true
-    }, complianceToken);
+    }, complianceToken, { 'X-Demo-Mode': 'true' });
     assert.equal(res.status, 400);
     assert.equal(data.code, 'OVERRIDE_NOT_APPLICABLE');
     const fresh = await Load.findById(load._id);

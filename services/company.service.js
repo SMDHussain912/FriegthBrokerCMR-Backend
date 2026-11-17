@@ -1,17 +1,24 @@
 const Company = require('../models/Company');
+const Membership = require('../models/Membership');
 
 /**
  * Company creation service.
  * Validates input, creates company, and enrolls the creator as owner.
  */
-export async function createCompany(creatorId, companyData) {
+async function createCompany(creatorId, companyData = {}) {
   if (!companyData.name) {
     const error = new Error('Company name is required');
     error.status = 400;
     throw error;
   }
+  const slugValue = typeof companyData.slug === 'string' ? companyData.slug.trim().toLowerCase() : '';
+  if (!slugValue) {
+    const error = new Error('Company slug is required');
+    error.status = 400;
+    throw error;
+  }
 
-  const existing = await Company.findOne({ slug: companyData.slug.trim().toLowerCase() });
+  const existing = await Company.findOne({ slug: slugValue });
   if (existing) {
     const error = new Error('A company with this slug already exists');
     error.status = 409;
@@ -19,8 +26,8 @@ export async function createCompany(creatorId, companyData) {
   }
 
   const companyDataTrimmed = {
-    name: companyData.name.trim(),
-    slug: companyData.slug.trim().toLowerCase(),
+    name: String(companyData.name).trim(),
+    slug: slugValue,
     type: companyData.type || 'brokerage',
     status: companyData.status || 'pending',
     owner: creatorId,
@@ -33,7 +40,7 @@ export async function createCompany(creatorId, companyData) {
   await Membership.create({
     user: creatorId,
     company: company._id,
-    role: 'broker_owner',
+    role: company.type === 'carrier' ? 'carrier_owner' : company.type === 'platform' ? 'platform_admin' : 'broker_owner',
     isActive: true
   });
 
@@ -44,7 +51,7 @@ export async function createCompany(creatorId, companyData) {
  * Membership creation service.
  * Validates role compatibility with company type.
  */
-export async function createMembership(userId, companyId, role) {
+async function createMembership(userId, companyId, role) {
   const company = await Company.findById(companyId);
   if (!company) {
     const error = new Error('Company not found');
@@ -55,8 +62,8 @@ export async function createMembership(userId, companyId, role) {
   const roleCompatibility = {
     brokerage: ['broker_owner', 'broker_admin', 'broker', 'operations_manager',
                 'compliance_officer', 'finance', 'viewer'],
-    carrier: ['carrier_owner', 'carrier_admin', 'dispatcher', 'driver'],
-    platform: ['platform_admin', 'platform_support']
+    carrier: ['carrier_owner', 'carrier_admin', 'dispatcher', 'driver', 'viewer'],
+    platform: ['platform_admin', 'platform_support', 'viewer']
   };
 
   const compatibleRoles = roleCompatibility[company.type];
@@ -76,40 +83,37 @@ export async function createMembership(userId, companyId, role) {
   const membership = await Membership.create({
     user: userId,
     company: companyId,
-    role: role,
+    role,
     isActive: true
   });
 
   return membership;
 }
 
-/**
- * Membership lookup service.
- */
-export async function getMembership(userId, companyId) {
-  return await Membership.findOne({ user: userId, company: companyId });
+async function getMembership(userId, companyId) {
+  return Membership.findOne({ user: userId, company: companyId });
 }
 
-/**
- * Company membership listing service.
- */
-export async function listUserMemberships(userId) {
-  return await Membership.find({ user: userId, isActive: true })
+async function listUserMemberships(userId) {
+  return Membership.find({ user: userId, isActive: true })
     .populate('company', 'name slug type status');
 }
 
-/**
- * Membership activation and suspension service.
- */
-export async function toggleMembershipStatus(membershipId, active) {
-  return await Membership.findByIdAndUpdate(membershipId, { isActive: active }, { new: true });
+async function toggleMembershipStatus(membershipId, active) {
+  return Membership.findByIdAndUpdate(membershipId, { isActive: Boolean(active) }, { new: true });
 }
 
-/**
- * Check if user has a specific role in a company.
- */
-export async function hasMembershipRole(userId, companyId, role) {
+async function hasMembershipRole(userId, companyId, role) {
   const membership = await Membership.findOne({ user: userId, company: companyId, isActive: true });
   if (!membership) return false;
-  return membership.permissions.includes(role) || membership.role === role;
+  return (membership.permissions || []).includes(role) || membership.role === role;
 }
+
+module.exports = {
+  createCompany,
+  createMembership,
+  getMembership,
+  listUserMemberships,
+  toggleMembershipStatus,
+  hasMembershipRole
+};

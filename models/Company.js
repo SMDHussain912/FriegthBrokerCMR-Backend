@@ -11,7 +11,6 @@ const companySchema = new mongoose.Schema({
     type: String,
     required: [true, 'Company slug is required'],
     trim: true,
-    unique: true,
     lowercase: true
   },
   type: {
