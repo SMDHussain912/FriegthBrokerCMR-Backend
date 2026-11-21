@@ -372,9 +372,19 @@ async function updateTenderStatus(req, tenderId, body) {
       : `Tender ${next}`,
     details: { tenderId: String(tender._id), carrierId: String(tender.carrier) },
   });
-  await audit(req, `LOAD_TENDER_${next.toUpperCase()}`, 'Load', load._id, `Tender ${next} for load ${load.loadNumber}`, {
-    tenderId: String(tender._id), carrierId: String(tender.carrier),
-  });
+
+  if (next === 'accepted') {
+    // Canonical assignment audit event: tender acceptance and explicit assign
+    // both transition the load to ASSIGNED with a carrier. Emit LOAD_ASSIGNED
+    // (with via: 'tender' metadata) so downstream consumers listen to one event.
+    await audit(req, 'LOAD_ASSIGNED', 'Load', load._id, `Tender accepted; load ${load.loadNumber} assigned to carrier`, {
+      via: 'tender', tenderId: String(tender._id), carrierId: String(tender.carrier),
+    });
+  } else {
+    await audit(req, `LOAD_TENDER_${next.toUpperCase()}`, 'Load', load._id, `Tender ${next} for load ${load.loadNumber}`, {
+      tenderId: String(tender._id), carrierId: String(tender.carrier),
+    });
+  }
   return { success: true, tender };
 }
 
@@ -510,6 +520,66 @@ async function listExceptions(req, query = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Proof of delivery — captured at the moment of delivery confirmation.
+// ---------------------------------------------------------------------------
+
+async function confirmDelivery(req, loadId, body) {
+  assertCompany(req);
+  assertRole(req, DISPATCH_ROLES, 'confirm load delivery');
+  ensureBody(body);
+  const load = await findLoad(req, loadId);
+
+  if (load.status !== 'DELIVERED') {
+    throw new TmsError(409, 'INVALID_LOAD_STATUS', `Cannot confirm delivery for a load with status ${load.status}. Load must be DELIVERED.`);
+  }
+  if (load.deliveryProof && load.deliveryProof.confirmedAt) {
+    throw new TmsError(409, 'DELIVERY_ALREADY_CONFIRMED', 'Delivery has already been confirmed for this load.');
+  }
+
+  const now = new Date();
+  const actorEmail = req.user && req.user.email;
+  const actorRole = (req.membership && req.membership.role) || (req.user && req.user.role);
+
+  const proof = {
+    confirmedAt: now,
+    confirmedBy: actorEmail,
+    confirmedByRole: actorRole,
+    signedBy: body.signedBy ? String(body.signedBy).trim().slice(0, 200) : undefined,
+    notes: body.notes ? String(body.notes).trim().slice(0, 2000) : undefined,
+    documentUri: body.documentUri ? String(body.documentUri).trim().slice(0, 500) : undefined,
+    conditionAtDelivery: body.conditionAtDelivery ? String(body.conditionAtDelivery).trim().slice(0, 200) : undefined,
+  };
+  load.deliveryProof = proof;
+  await load.save();
+
+  await recordEvent(req, load._id, {
+    type: 'milestone',
+    status: 'DELIVERY_CONFIRMED',
+    summary: `Delivery confirmed for load ${load.loadNumber}`,
+    details: {
+      confirmedAt: now.toISOString(),
+      confirmedBy: actorEmail,
+      signedBy: proof.signedBy,
+      conditionAtDelivery: proof.conditionAtDelivery,
+    },
+  });
+  await audit(req, 'LOAD_DELIVERY_CONFIRMED', 'Load', load._id, `Delivery confirmed for load ${load.loadNumber}`, {
+    confirmedAt: now.toISOString(),
+    signedBy: proof.signedBy,
+    conditionAtDelivery: proof.conditionAtDelivery,
+  });
+
+  return { success: true, load: load.toObject() };
+}
+
+async function getDeliveryProof(req, loadId) {
+  assertCompany(req);
+  assertRole(req, READ_ROLES, 'read delivery proof');
+  const load = await findLoad(req, loadId);
+  return { success: true, deliveryProof: load.deliveryProof || null, loadStatus: load.status };
+}
+
+// ---------------------------------------------------------------------------
 // Activity history (customer + carrier) and reporting
 // ---------------------------------------------------------------------------
 
@@ -607,6 +677,7 @@ module.exports = {
   listTenders, createTender, updateTenderStatus,
   getFinancials, updateFinancials, marginFor,
   activityHistory, dashboard, reportLoads, listExceptions,
+  confirmDelivery, getDeliveryProof,
   recordEvent,
   WRITE_ROLES, READ_ROLES, DISPATCH_ROLES,
 };

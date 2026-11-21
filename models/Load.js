@@ -119,6 +119,38 @@ const loadSchema = new mongoose.Schema({
   isDemoData: {
     type: Boolean,
     default: false
+  },
+  // Proof of delivery captured at the moment of delivery confirmation.
+  // Server-authoritative: only the driver/dispatch role may set this, and
+  // the actor identity is stamped from the JWT, never from the request body.
+  deliveryProof: {
+    confirmedAt: {
+      type: Date
+    },
+    confirmedBy: {
+      type: String,
+      trim: true
+    },
+    confirmedByRole: {
+      type: String,
+      trim: true
+    },
+    signedBy: {
+      type: String,
+      trim: true
+    },
+    notes: {
+      type: String,
+      trim: true
+    },
+    documentUri: {
+      type: String,
+      trim: true
+    },
+    conditionAtDelivery: {
+      type: String,
+      trim: true
+    }
   }
 }, { timestamps: true });
 

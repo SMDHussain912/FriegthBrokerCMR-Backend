@@ -24,7 +24,10 @@ const userSchema = new mongoose.Schema({
     default: 'broker',
     required: true
   },
-  isDemoData: { type: Boolean, default: false }
+  isDemoData: { type: Boolean, default: false },
+  // Password reset support (server-authoritative; tokens never returned to client)
+  passwordResetToken: { type: String, trim: true, select: false },
+  passwordResetExpires: { type: Date, select: false }
 }, { timestamps: true });
 
 // Hash a plaintext password (bcrypt, cost 10)

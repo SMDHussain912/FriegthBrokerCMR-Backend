@@ -14,10 +14,30 @@ const {
   findCarrierForTenant,
   updateCarrier,
   archiveCarrier,
+  addCarrierContact,
+  updateCarrierContact,
+  deleteCarrierContact,
+  addCarrierEquipment,
+  updateCarrierEquipment,
+  deleteCarrierEquipment,
+  addCarrierDriver,
+  updateCarrierDriver,
+  deleteCarrierDriver,
   toPublicCarrier
 } = require('../services/carrierService');
+const {
+  ComplianceError,
+  listComplianceReviewItems
+} = require('../services/carrierComplianceService');
 
 const handleCarrierError = (error, res, next) => {
+  if (error instanceof ComplianceError) {
+    return res.status(error.status).json({
+      success: false,
+      error: error.message,
+      code: error.code
+    });
+  }
   if (error instanceof VettingApiError) {
     return res.status(error.status).json({
       success: false,
@@ -58,6 +78,21 @@ router.get('/', optionalAuth, requireCompanyContext, async (req, res, next) => {
     res.json(result);
   } catch (error) {
     handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   GET /api/carriers/compliance-review
+ * @desc    Company-scoped compliance review queue: insurance expiry,
+ *          authority status, and vetting review items per carrier.
+ * @access  Authenticated read roles (demo mode denied)
+ */
+router.get('/compliance-review', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const result = await listComplianceReviewItems(req, req.query);
+    res.json(result);
+  } catch (error) {
+    return handleCarrierError(error, res, next);
   }
 });
 
@@ -127,10 +162,6 @@ router.get('/:id/vet', requireAuth, requireCompanyContext, async (req, res, next
 });
 
 /**
- * H3: verification metadata is server-authoritative. Only compliance/admin
- * can mark a policy VERIFIED/REJECTED, and verifiedBy/verifiedAt are stamped
- * from the JWT identity — never from the request body.
- *
  * @route   PATCH /api/carriers/:carrierId/policies/:policyId/verify
  * @access  compliance_officer, admin (scoped to active company or demo)
  */
@@ -252,4 +283,245 @@ router.patch('/:id/archive', requireAuth, requireCompanyContext, async (req, res
     return handleCarrierError(error, res, next);
   }
 });
+
+/**
+ * @route   POST /api/carriers/:carrierId/contacts
+ * @desc    Add a contact to a carrier
+ * @access  Authenticated (requires write role)
+ */
+router.post('/:carrierId/contacts', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    const contact = await addCarrierContact(req, req.params.carrierId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_CONTACT_ADDED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier contact added',
+      metadata: { contactId: String(contact._id), name: contact.name },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.status(201).json({ success: true, contact });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   PATCH /api/carriers/:carrierId/contacts/:contactId
+ * @desc    Update a carrier contact
+ * @access  Authenticated (requires write role)
+ */
+router.patch('/:carrierId/contacts/:contactId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.contactId, 'Contact ID', res)) { return; }
+    const contact = await updateCarrierContact(req, req.params.carrierId, req.params.contactId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_CONTACT_UPDATED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier contact updated',
+      metadata: { contactId: req.params.contactId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true, contact });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   DELETE /api/carriers/:carrierId/contacts/:contactId
+ * @desc    Delete a carrier contact
+ * @access  Authenticated (requires write role)
+ */
+router.delete('/:carrierId/contacts/:contactId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.contactId, 'Contact ID', res)) { return; }
+    await deleteCarrierContact(req, req.params.carrierId, req.params.contactId);
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_CONTACT_DELETED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier contact deleted',
+      metadata: { contactId: req.params.contactId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   POST /api/carriers/:carrierId/equipment
+ * @desc    Add equipment to a carrier
+ * @access  Authenticated (requires write role)
+ */
+router.post('/:carrierId/equipment', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    const equipment = await addCarrierEquipment(req, req.params.carrierId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_EQUIPMENT_ADDED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier equipment added',
+      metadata: { equipmentId: String(equipment._id), unitNumber: equipment.unitNumber },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.status(201).json({ success: true, equipment });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   PATCH /api/carriers/:carrierId/equipment/:equipmentId
+ * @desc    Update carrier equipment
+ * @access  Authenticated (requires write role)
+ */
+router.patch('/:carrierId/equipment/:equipmentId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.equipmentId, 'Equipment ID', res)) { return; }
+    const equipment = await updateCarrierEquipment(req, req.params.carrierId, req.params.equipmentId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_EQUIPMENT_UPDATED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier equipment updated',
+      metadata: { equipmentId: req.params.equipmentId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true, equipment });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   DELETE /api/carriers/:carrierId/equipment/:equipmentId
+ * @desc    Delete carrier equipment
+ * @access  Authenticated (requires write role)
+ */
+router.delete('/:carrierId/equipment/:equipmentId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.equipmentId, 'Equipment ID', res)) { return; }
+    await deleteCarrierEquipment(req, req.params.carrierId, req.params.equipmentId);
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_EQUIPMENT_DELETED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier equipment deleted',
+      metadata: { equipmentId: req.params.equipmentId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   POST /api/carriers/:carrierId/drivers
+ * @desc    Add a driver to a carrier
+ * @access  Authenticated (requires write role)
+ */
+router.post('/:carrierId/drivers', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    const driver = await addCarrierDriver(req, req.params.carrierId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_DRIVER_ADDED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier driver added',
+      metadata: { driverId: String(driver._id), name: driver.name },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.status(201).json({ success: true, driver });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   PATCH /api/carriers/:carrierId/drivers/:driverId
+ * @desc    Update carrier driver
+ * @access  Authenticated (requires write role)
+ */
+router.patch('/:carrierId/drivers/:driverId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.driverId, 'Driver ID', res)) { return; }
+    const driver = await updateCarrierDriver(req, req.params.carrierId, req.params.driverId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_DRIVER_UPDATED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier driver updated',
+      metadata: { driverId: req.params.driverId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true, driver });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
+/**
+ * @route   DELETE /api/carriers/:carrierId/drivers/:driverId
+ * @desc    Delete carrier driver
+ * @access  Authenticated (requires write role)
+ */
+router.delete('/:carrierId/drivers/:driverId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    if (!assertObjectId(req.params.carrierId, 'Carrier ID', res)) { return; }
+    if (!assertObjectId(req.params.driverId, 'Driver ID', res)) { return; }
+    await deleteCarrierDriver(req, req.params.carrierId, req.params.driverId);
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'CARRIER_DRIVER_DELETED',
+      entityType: 'Carrier',
+      entityId: req.params.carrierId,
+      summary: 'Carrier driver deleted',
+      metadata: { driverId: req.params.driverId },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.json({ success: true });
+  } catch (error) {
+    return handleCarrierError(error, res, next);
+  }
+});
+
 module.exports = router;

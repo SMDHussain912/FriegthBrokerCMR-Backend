@@ -119,6 +119,41 @@ const carrierSchema = new mongoose.Schema({
       zip: String
     }
   },
+  contacts: [{
+    name: { type: String, trim: true },
+    title: { type: String, trim: true },
+    phone: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
+    mobile: { type: String, trim: true },
+    isPrimary: { type: Boolean, default: false },
+    department: { type: String, trim: true }
+  }],
+  equipment: [{
+    type: { type: String, trim: true, enum: ['tractor', 'trailer', 'reefer', 'flatbed', 'tanker', 'other'] },
+    unitNumber: { type: String, trim: true },
+    vin: { type: String, trim: true },
+    licensePlate: { type: String, trim: true },
+    state: { type: String, trim: true },
+    year: { type: Number, min: 1900, max: 2100 },
+    make: { type: String, trim: true },
+    model: { type: String, trim: true },
+    status: { type: String, enum: ['active', 'inactive', 'maintenance', 'retired'], default: 'active' },
+    purchaseDate: { type: Date },
+    insuranceExpiration: { type: Date },
+    inspectionDue: { type: Date }
+  }],
+  drivers: [{
+    name: { type: String, trim: true },
+    cdlNumber: { type: String, trim: true },
+    cdlClass: { type: String, enum: ['A', 'B', 'C'], trim: true },
+    phone: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
+    hireDate: { type: Date },
+    status: { type: String, enum: ['active', 'on_leave', 'terminated', 'probation'], default: 'active' },
+    medicalExpiration: { type: Date },
+    cdlExpiration: { type: Date },
+    isOwnerOperator: { type: Boolean, default: false }
+  }],
   authorityStatus: {
     type: String,
     enum: ['ACTIVE', 'REVOKED', 'INACTIVE', 'PENDING'],
@@ -191,6 +226,9 @@ carrierSchema.index(
   { unique: true, partialFilterExpression: { company: { $exists: true, $type: "objectId" }, isDemoData: false } }
 );
 carrierSchema.index({ company: 1, isDemoData: 1, isArchived: 1, legalName: 1 });
+carrierSchema.index({ company: 1, 'equipment.unitNumber': 1 });
+carrierSchema.index({ company: 1, 'drivers.cdlNumber': 1 });
+carrierSchema.index({ company: 1, 'contacts.email': 1 });
 
 // Global unique index for demo carriers (company is null/undefined)
 carrierSchema.index(

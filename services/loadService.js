@@ -5,6 +5,7 @@ const CarrierAssignment = require('../models/CarrierAssignment');
 const { evaluateCarrierForLoad } = require('./vettingEngine');
 const { assignCarrierToLoad } = require('./assignmentService');
 const { findCarrierForTenant, CarrierApiError } = require('./carrierService');
+const { recordAuditEvent } = require('./auditService');
 
 const LOAD_WRITE_ROLES = new Set(['broker_owner', 'broker_admin', 'broker', 'operations_manager', 'platform_admin']);
 const LOAD_READ_ROLES = new Set([
@@ -277,6 +278,59 @@ async function assignLoad(req, loadId, body) {
     actor: { assignedBy: req.user.email, actorRole },
     override: { overrideReason: body.overrideReason, allowOverride: body.allowOverride }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Load notes (stored as LoadEvent type 'note')
+// ---------------------------------------------------------------------------
+
+async function listLoadNotes(req, loadId) {
+  const load = await findLoadForTenant(req, loadId);
+  const events = await LoadEvent.find({ load: load._id, type: 'note' })
+    .sort({ occurredAt: -1 })
+    .limit(200);
+  return { success: true, count: events.length, notes: events.map((e) => ({
+    id: e._id,
+    summary: e.summary,
+    details: e.details,
+    occurredAt: e.occurredAt,
+    actor: e.actor,
+    actorRole: e.actorRole,
+  })) };
+}
+
+async function createLoadNote(req, loadId, body) {
+  assertCompanyContext(req);
+  assertRole(req, LOAD_WRITE_ROLES, 'add load note');
+  const load = await findLoadForTenant(req, loadId);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new LoadApiError(400, 'INVALID_BODY', 'Request body must be a JSON object.');
+  if (!body.summary || !String(body.summary).trim()) throw new LoadApiError(400, 'REQUIRED_FIELD', 'Note summary is required');
+  const summary = String(body.summary).trim().slice(0, 400);
+  const details = body.details && typeof body.details === 'object' ? body.details : undefined;
+  const event = await LoadEvent.create({
+    company: req.companyId,
+    load: load._id,
+    type: 'note',
+    status: undefined,
+    summary,
+    details,
+    occurredAt: body.occurredAt ? new Date(body.occurredAt) : new Date(),
+    actor: req.user && req.user.id,
+    actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+    isDemoData: false,
+  });
+  await auditService.recordAuditEvent({
+    companyId: req.companyId,
+    actorId: req.user && req.user.id,
+    actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+    action: 'LOAD_NOTE_ADDED',
+    entityType: 'Load',
+    entityId: load._id,
+    summary: 'Load note added: ' + summary,
+    metadata: { noteId: String(event._id) },
+    isDemoData: false,
+  });
+  return { success: true, event: { id: event._id, summary: event.summary, details: event.details, occurredAt: event.occurredAt, actor: event.actor, actorRole: event.actorRole } };
 }
 
 module.exports = {

@@ -84,8 +84,39 @@ async function listCustomers(req, query = {}) {
   if (query.type) filter.type = String(query.type);
   if (query.status) filter.status = String(query.status);
   if (query.q) filter.name = { $regex: String(query.q).slice(0, 100), $options: 'i' };
-  const items = await Customer.find(filter).sort({ updatedAt: -1 }).limit(200);
-  return { success: true, count: items.length, customers: items };
+
+  // Pagination (bounded).
+  const page = Math.max(1, parseInt(String(query.page || '1'), 10) || 1);
+  const limit = Math.min(Math.max(1, parseInt(String(query.limit || '50'), 10) || 50), 200);
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    Customer.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit),
+    Customer.countDocuments(filter),
+  ]);
+
+  // Follow-up reminders: customers whose most recent activity is stale.
+  const reminders = items.map((c) => {
+    const updated = c.updatedAt || c.createdAt;
+    const daysSince = updated ? Math.floor((Date.now() - new Date(updated).getTime()) / (1000 * 60 * 60 * 24)) : null;
+    return {
+      customerId: c._id,
+      name: c.name,
+      status: c.status,
+      daysSinceLastActivity: daysSince,
+      needsFollowUp: daysSince !== null && daysSince >= 30,
+    };
+  });
+
+  return {
+    success: true,
+    count: items.length,
+    total,
+    page,
+    limit,
+    customers: items,
+    reminders,
+  };
 }
 
 async function createCustomer(req, body) {

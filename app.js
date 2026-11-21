@@ -9,10 +9,32 @@ const vettingRoutes = require('./routes/vettingRoutes');
 const authRoutes = require('./routes/authRoutes');
 const crmRoutes = require('./routes/crmRoutes');
 const tmsRoutes = require('./routes/tmsRoutes');
+const invoiceRoutes = require('./routes/invoiceRoutes');
+const payableRoutes = require('./routes/payableRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
+const creditNoteRoutes = require('./routes/creditNoteRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const notificationDeliveryRoutes = require('./routes/notificationDeliveryRoutes');
+const notificationPreferenceRoutes = require('./routes/notificationPreferenceRoutes');
+const financeExportRoutes = require('./routes/financeExportRoutes');
+const documentExpiryRoutes = require('./routes/documentExpiryRoutes');
+const jobRoutes = require('./routes/jobRoutes');
+const externalAdapterRoutes = require('./routes/externalAdapterRoutes');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
+const { securityHeaders } = require('./middleware/securityHeaders');
+const { rateLimiter } = require('./middleware/rateLimiter');
 
 const app = express();
+
+// Global security headers (applied to every response).
+app.use(securityHeaders);
+
+// Global rate limiter: 120 requests per minute per IP + route.
+app.use(rateLimiter({ windowMs: 60 * 1000, max: 120 }));
+
+// Stricter rate limit on auth endpoints.
+app.use('/api/auth', rateLimiter({ windowMs: 60 * 1000, max: 20 }));
 
 // Express body parsers
 app.use(express.json());
@@ -51,6 +73,17 @@ app.use('/api/loads', loadRoutes);
 app.use('/api/vetting', vettingRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/tms', tmsRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/payables', payableRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/credit-notes', creditNoteRoutes);
+app.use('/api/notifications/delivery', notificationDeliveryRoutes);
+app.use('/api/notifications/preferences', notificationPreferenceRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/financial/export', financeExportRoutes);
+app.use('/api/document-expiry', documentExpiryRoutes);
+app.use('/api/jobs', jobRoutes);
+app.use('/api/adapters', externalAdapterRoutes);
 
 // Catch 404 & forward to error handler
 app.use(notFound);

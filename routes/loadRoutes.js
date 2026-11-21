@@ -195,4 +195,34 @@ router.get('/:id/assignment', requireAuth, requireCompanyContext, async (req, re
   }
 });
 
+// Load notes (stored as LoadEvent type 'note')
+router.get('/:loadId/notes', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const result = await loadService.listLoadNotes(req, req.params.loadId);
+    return res.json(result);
+  } catch (error) {
+    return handleError(error, res, next);
+  }
+});
+
+router.post('/:loadId/notes', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const result = await loadService.createLoadNote(req, req.params.loadId, req.body || {});
+    await recordAuditEvent({
+      companyId: req.companyId || null,
+      actorId: req.user && req.user.id,
+      actorRole: (req.membership && req.membership.role) || (req.user && req.user.role),
+      action: 'LOAD_NOTE_ADDED',
+      entityType: 'Load',
+      entityId: req.params.loadId,
+      summary: 'Load note added',
+      metadata: { noteId: result && (result.event && result.event._id) },
+      isDemoData: Boolean(req.isDemoMode)
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    return handleError(error, res, next);
+  }
+});
+
 module.exports = router;

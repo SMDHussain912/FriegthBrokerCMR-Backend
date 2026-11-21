@@ -314,6 +314,224 @@ async function archiveCarrier(req, carrierId, body) {
   return toPublicCarrier(carrier);
 }
 
+// ---------------------------------------------------------------------------
+// Carrier contacts
+// ---------------------------------------------------------------------------
+
+async function addCarrierContact(req, carrierId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  ensureBody(body);
+  if (!body.name || !String(body.name).trim()) throw new CarrierApiError(400, 'REQUIRED_FIELD', 'Contact name is required.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const contact = {
+    _id: new mongoose.Types.ObjectId(),
+    name: String(body.name).trim(),
+    title: body.title ? String(body.title).trim() : undefined,
+    phone: body.phone ? String(body.phone).trim() : undefined,
+    email: body.email ? String(body.email).trim().toLowerCase() : undefined,
+    mobile: body.mobile ? String(body.mobile).trim() : undefined,
+    isPrimary: Boolean(body.isPrimary),
+    department: body.department ? String(body.department).trim() : undefined
+  };
+  if (contact.isPrimary) {
+    for (const c of carrier.contacts || []) c.isPrimary = false;
+  }
+  carrier.contacts.push(contact);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['contacts']);
+  await carrier.save();
+  return carrier.contacts.id(contact._id);
+}
+
+async function updateCarrierContact(req, carrierId, contactId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(contactId))) throw new CarrierApiError(400, 'INVALID_ID', 'Contact ID must be a valid ObjectId.');
+  ensureBody(body);
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const contact = carrier.contacts.id(contactId);
+  if (!contact) throw new CarrierApiError(404, 'CONTACT_NOT_FOUND', 'Contact not found.');
+  if (body.name) contact.name = String(body.name).trim();
+  if (body.title !== undefined) contact.title = String(body.title).trim();
+  if (body.phone !== undefined) contact.phone = String(body.phone).trim();
+  if (body.email !== undefined) contact.email = String(body.email).trim().toLowerCase();
+  if (body.mobile !== undefined) contact.mobile = String(body.mobile).trim();
+  if (body.isPrimary !== undefined) {
+    contact.isPrimary = Boolean(body.isPrimary);
+    if (contact.isPrimary) {
+      for (const c of carrier.contacts || []) {
+        if (String(c._id) !== String(contactId)) c.isPrimary = false;
+      }
+    }
+  }
+  if (body.department !== undefined) contact.department = String(body.department).trim();
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['contacts']);
+  await carrier.save();
+  return carrier.contacts.id(contactId);
+}
+
+async function deleteCarrierContact(req, carrierId, contactId) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(contactId))) throw new CarrierApiError(400, 'INVALID_ID', 'Contact ID must be a valid ObjectId.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const contact = carrier.contacts.id(contactId);
+  if (!contact) throw new CarrierApiError(404, 'CONTACT_NOT_FOUND', 'Contact not found.');
+  carrier.contacts.pull(contactId);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['contacts']);
+  await carrier.save();
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// Carrier equipment
+// ---------------------------------------------------------------------------
+
+async function addCarrierEquipment(req, carrierId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  ensureBody(body);
+  if (!body.type || !['tractor', 'trailer', 'reefer', 'flatbed', 'tanker', 'other'].includes(body.type)) throw new CarrierApiError(400, 'REQUIRED_FIELD', 'Equipment type is required.');
+  if (!body.unitNumber || !String(body.unitNumber).trim()) throw new CarrierApiError(400, 'REQUIRED_FIELD', 'Equipment unit number is required.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const existing = carrier.equipment.find((e) => String(e.unitNumber).toLowerCase() === String(body.unitNumber).trim().toLowerCase());
+  if (existing) throw new CarrierApiError(409, 'DUPLICATE_EQUIPMENT', 'Equipment with this unit number already exists.');
+  const equipment = {
+    _id: new mongoose.Types.ObjectId(),
+    type: body.type,
+    unitNumber: String(body.unitNumber).trim(),
+    vin: body.vin ? String(body.vin).trim() : undefined,
+    licensePlate: body.licensePlate ? String(body.licensePlate).trim() : undefined,
+    state: body.state ? String(body.state).trim() : undefined,
+    year: body.year ? Number(body.year) : undefined,
+    make: body.make ? String(body.make).trim() : undefined,
+    model: body.model ? String(body.model).trim() : undefined,
+    status: body.status || 'active',
+    purchaseDate: body.purchaseDate ? new Date(body.purchaseDate) : undefined,
+    insuranceExpiration: body.insuranceExpiration ? new Date(body.insuranceExpiration) : undefined,
+    inspectionDue: body.inspectionDue ? new Date(body.inspectionDue) : undefined
+  };
+  carrier.equipment.push(equipment);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['equipment']);
+  await carrier.save();
+  return carrier.equipment.id(equipment._id);
+}
+
+async function updateCarrierEquipment(req, carrierId, equipmentId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(equipmentId))) throw new CarrierApiError(400, 'INVALID_ID', 'Equipment ID must be a valid ObjectId.');
+  ensureBody(body);
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const equipment = carrier.equipment.id(equipmentId);
+  if (!equipment) throw new CarrierApiError(404, 'EQUIPMENT_NOT_FOUND', 'Equipment not found.');
+  if (body.type) equipment.type = body.type;
+  if (body.unitNumber) equipment.unitNumber = String(body.unitNumber).trim();
+  if (body.vin !== undefined) equipment.vin = String(body.vin).trim();
+  if (body.licensePlate !== undefined) equipment.licensePlate = String(body.licensePlate).trim();
+  if (body.state !== undefined) equipment.state = String(body.state).trim();
+  if (body.year !== undefined) equipment.year = Number(body.year);
+  if (body.make !== undefined) equipment.make = String(body.make).trim();
+  if (body.model !== undefined) equipment.model = String(body.model).trim();
+  if (body.status) equipment.status = body.status;
+  if (body.purchaseDate !== undefined) equipment.purchaseDate = body.purchaseDate ? new Date(body.purchaseDate) : null;
+  if (body.insuranceExpiration !== undefined) equipment.insuranceExpiration = body.insuranceExpiration ? new Date(body.insuranceExpiration) : null;
+  if (body.inspectionDue !== undefined) equipment.inspectionDue = body.inspectionDue ? new Date(body.inspectionDue) : null;
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['equipment']);
+  await carrier.save();
+  return carrier.equipment.id(equipmentId);
+}
+
+async function deleteCarrierEquipment(req, carrierId, equipmentId) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(equipmentId))) throw new CarrierApiError(400, 'INVALID_ID', 'Equipment ID must be a valid ObjectId.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const equipment = carrier.equipment.id(equipmentId);
+  if (!equipment) throw new CarrierApiError(404, 'EQUIPMENT_NOT_FOUND', 'Equipment not found.');
+  carrier.equipment.pull(equipmentId);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['equipment']);
+  await carrier.save();
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// Carrier drivers
+// ---------------------------------------------------------------------------
+
+async function addCarrierDriver(req, carrierId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  ensureBody(body);
+  if (!body.name || !String(body.name).trim()) throw new CarrierApiError(400, 'REQUIRED_FIELD', 'Driver name is required.');
+  if (!body.cdlNumber || !String(body.cdlNumber).trim()) throw new CarrierApiError(400, 'REQUIRED_FIELD', 'CDL number is required.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const existing = carrier.drivers.find((d) => String(d.cdlNumber).toLowerCase() === String(body.cdlNumber).trim().toLowerCase());
+  if (existing) throw new CarrierApiError(409, 'DUPLICATE_DRIVER', 'Driver with this CDL number already exists.');
+  const driver = {
+    _id: new mongoose.Types.ObjectId(),
+    name: String(body.name).trim(),
+    cdlNumber: String(body.cdlNumber).trim(),
+    cdlClass: body.cdlClass ? String(body.cdlClass).trim() : undefined,
+    phone: body.phone ? String(body.phone).trim() : undefined,
+    email: body.email ? String(body.email).trim().toLowerCase() : undefined,
+    hireDate: body.hireDate ? new Date(body.hireDate) : undefined,
+    status: body.status || 'active',
+    medicalExpiration: body.medicalExpiration ? new Date(body.medicalExpiration) : undefined,
+    cdlExpiration: body.cdlExpiration ? new Date(body.cdlExpiration) : undefined,
+    isOwnerOperator: Boolean(body.isOwnerOperator)
+  };
+  carrier.drivers.push(driver);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['drivers']);
+  await carrier.save();
+  return carrier.drivers.id(driver._id);
+}
+
+async function updateCarrierDriver(req, carrierId, driverId, body) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(driverId))) throw new CarrierApiError(400, 'INVALID_ID', 'Driver ID must be a valid ObjectId.');
+  ensureBody(body);
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const driver = carrier.drivers.id(driverId);
+  if (!driver) throw new CarrierApiError(404, 'DRIVER_NOT_FOUND', 'Driver not found.');
+  if (body.name) driver.name = String(body.name).trim();
+  if (body.cdlNumber) driver.cdlNumber = String(body.cdlNumber).trim();
+  if (body.cdlClass) driver.cdlClass = String(body.cdlClass).trim();
+  if (body.phone !== undefined) driver.phone = String(body.phone).trim();
+  if (body.email !== undefined) driver.email = String(body.email).trim().toLowerCase();
+  if (body.hireDate !== undefined) driver.hireDate = body.hireDate ? new Date(body.hireDate) : null;
+  if (body.status) driver.status = body.status;
+  if (body.medicalExpiration !== undefined) driver.medicalExpiration = body.medicalExpiration ? new Date(body.medicalExpiration) : null;
+  if (body.cdlExpiration !== undefined) driver.cdlExpiration = body.cdlExpiration ? new Date(body.cdlExpiration) : null;
+  if (body.isOwnerOperator !== undefined) driver.isOwnerOperator = Boolean(body.isOwnerOperator);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['drivers']);
+  await carrier.save();
+  return carrier.drivers.id(driverId);
+}
+
+async function deleteCarrierDriver(req, carrierId, driverId) {
+  assertCompanyRole(req, 'UPDATE');
+  if (!mongoose.Types.ObjectId.isValid(String(carrierId))) throw new CarrierApiError(400, 'INVALID_ID', 'Carrier ID must be a valid ObjectId.');
+  if (!mongoose.Types.ObjectId.isValid(String(driverId))) throw new CarrierApiError(400, 'INVALID_ID', 'Driver ID must be a valid ObjectId.');
+  const carrier = await findCarrierForTenant(req, carrierId, { includeAudit: false });
+  const driver = carrier.drivers.id(driverId);
+  if (!driver) throw new CarrierApiError(404, 'DRIVER_NOT_FOUND', 'Driver not found.');
+  carrier.drivers.pull(driverId);
+  carrier.updatedBy = req.user.id;
+  addAuditEntry(carrier, 'UPDATED', req.user.id, ['drivers']);
+  await carrier.save();
+  return { success: true };
+}
+
 module.exports = {
   CarrierApiError,
   mapCarrierError,
@@ -323,5 +541,14 @@ module.exports = {
   findCarrierForTenant,
   updateCarrier,
   archiveCarrier,
+  addCarrierContact,
+  updateCarrierContact,
+  deleteCarrierContact,
+  addCarrierEquipment,
+  updateCarrierEquipment,
+  deleteCarrierEquipment,
+  addCarrierDriver,
+  updateCarrierDriver,
+  deleteCarrierDriver,
   toPublicCarrier
 };

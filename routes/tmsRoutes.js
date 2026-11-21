@@ -76,6 +76,14 @@ router.patch('/tenders/:tenderId', requireAuth, requireCompanyContext, wrap(asyn
   res.json(await tms.updateTenderStatus(req, req.params.tenderId, req.body || {}));
 }));
 
+router.post('/loads/:loadId/delivery-confirmation', requireAuth, requireCompanyContext, wrap(async (req, res) => {
+  res.status(201).json(await tms.confirmDelivery(req, req.params.loadId, req.body || {}));
+}));
+
+router.get('/loads/:loadId/delivery-proof', requireAuth, requireCompanyContext, wrap(async (req, res) => {
+  res.json(await tms.getDeliveryProof(req, req.params.loadId));
+}));
+
 // Load costs, customer rates and margins
 router.get('/loads/:loadId/financials', requireAuth, requireCompanyContext, wrap(async (req, res) => {
   res.json(await tms.getFinancials(req, req.params.loadId));
