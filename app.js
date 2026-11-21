@@ -1,5 +1,6 @@
 const express = require('express');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
 const healthRoutes = require('./routes/healthRoutes');
 const carrierRoutes = require('./routes/carrierRoutes');
 const documentRoutes = require('./routes/documentRoutes');
@@ -24,11 +25,18 @@ const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
 const { securityHeaders } = require('./middleware/securityHeaders');
 const { rateLimiter } = require('./middleware/rateLimiter');
+const { csrfTokenMiddleware, csrfProtectionMiddleware } = require('./middleware/csrf');
 
 const app = express();
 
 // Global security headers (applied to every response).
 app.use(securityHeaders);
+
+// Cookie parser for CSRF token cookies
+app.use(cookieParser());
+
+// CSRF token generation middleware (sets cookie on all responses)
+app.use(csrfTokenMiddleware);
 
 // Global rate limiter: 120 requests per minute per IP + route.
 app.use(rateLimiter({ windowMs: 60 * 1000, max: 120 }));
@@ -65,6 +73,10 @@ app.use((req, res, next) => {
 
 // Mount Routes
 app.use('/api/health', healthRoutes);
+
+// CSRF protection for cookie-authenticated mutating requests
+app.use('/api', csrfProtectionMiddleware);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/carriers', carrierRoutes);

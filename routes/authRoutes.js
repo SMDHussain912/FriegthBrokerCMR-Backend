@@ -195,12 +195,19 @@ router.post('/password/reset/request', async (req, res, next) => {
     user.passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
     user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
     await user.save();
-    // In production this token would be sent via email. Here we return it so
-    // the local dev flow can be exercised end-to-end.
+    
+    // SECURITY: Never return reset token in API response.
+    // Token must be delivered via verified email channel only.
+    // In development, log token for testing; in production, send via email service.
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[DEV] Password reset token for', emailValue, ':', token);
+    }
+    // TODO: Integrate with email service (SendGrid, SES, etc.) to send token via email
+    // await emailService.sendPasswordResetEmail(emailValue, token);
+    
     return res.json({
       success: true,
-      message: 'Reset token issued.',
-      resetToken: token
+      message: 'If an account exists, a reset token has been issued via email.'
     });
   } catch (error) {
     return next(error);
