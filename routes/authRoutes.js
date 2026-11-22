@@ -1,18 +1,26 @@
 const express = require('express');
 const router = express.Router();
+const { requireAuth, optionalAuth } = require('../middleware/auth');
+const { requireCompanyContext } = require('../middleware/companyContext');
+const { csrfProtectionMiddleware } = require('../middleware/csrf');
+const authService = require('../services/authService');
 const User = require('../models/User');
-const { signToken, requireAuth } = require('../middleware/auth');
-const crypto = require('crypto');
+const Session = require('../models/Session');
+const { recordAuditEvent } = require('../services/auditService');
 
 /**
  * @route   POST /api/auth/login
- * @desc    Authenticate with email + password, return JWT (bcrypt-verified)
+ * @desc    Authenticate with email + password, create session, return tokens
  * @access  Public
  */
 router.post('/login', async (req, res, next) => {
   try {
     const email = req.body.email ? String(req.body.email).trim().toLowerCase() : '';
     const password = req.body.password ? String(req.body.password) : '';
+    const companyId = req.body.companyId ? String(req.body.companyId) : null;
+    const deviceId = req.body.deviceId ? String(req.body.deviceId) : null;
+    const rememberMe = req.body.rememberMe === true;
+
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -20,25 +28,181 @@ router.post('/login', async (req, res, next) => {
         code: 'CREDENTIALS_REQUIRED'
       });
     }
-    const user = await User.findOne({ email }).select('+passwordHash');
-    if (!user) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
-    }
-    // Demo accounts must never be usable in production, even with valid
-    // credentials — they are published in the README/seed output.
-    if (user.isDemoData && String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
-      return res.status(403).json({
+
+    const result = await authService.authenticate({
+      email,
+      password,
+      companyId,
+      deviceId,
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress,
+      rememberMe,
+      req
+    });
+
+    if (!result.success) {
+      const status = result.code === 'ACCOUNT_INACTIVE' || result.code === 'NO_COMPANY_ACCESS' ? 403 : 401;
+      return res.status(status).json({
         success: false,
-        error: 'Demo accounts are disabled in this environment',
-        code: 'DEMO_ACCOUNT_DISABLED'
+        error: result.message,
+        code: result.code,
+        requiresMfa: result.requiresMfa,
+        sessionId: result.sessionId
       });
     }
-    const ok = await user.verifyPassword(password);
-    if (!ok) {
-      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+
+    // Set refresh token as httpOnly cookie (secure in production)
+    if (result.refreshToken) {
+      const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+      res.cookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+      });
     }
-    const token = signToken(user);
-    return res.json({ success: true, token, user: user.toSafeJSON() });
+
+    return res.json({
+      success: true,
+      accessToken: result.accessToken,
+      user: result.user,
+      requiresMfa: result.requiresMfa || false,
+      sessionId: result.sessionId
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/verify
+ * @desc    Verify MFA code and complete login
+ * @access  Public (requires sessionId from login)
+ */
+router.post('/mfa/verify', async (req, res, next) => {
+  try {
+    const { sessionId, code, method = 'totp' } = req.body || {};
+
+    if (!sessionId || !code) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session ID and MFA code are required',
+        code: 'MFA_REQUIRED'
+      });
+    }
+
+    const result = await authService.verifyMfa({
+      sessionId,
+      code,
+      method
+    });
+
+    if (!result.success) {
+      return res.status(401).json({
+        success: false,
+        error: result.message,
+        code: result.code
+      });
+    }
+
+    // Set new refresh token cookie if rotated
+    if (result.refreshToken) {
+      const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+      res.cookie('refreshToken', result.refreshToken, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000
+      });
+    }
+
+    return res.json({
+      success: true,
+      accessToken: result.accessToken,
+      user: result.user
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/refresh
+ * @desc    Refresh access token using refresh token (cookie or body)
+ * @access  Public
+ */
+router.post('/refresh', async (req, res, next) => {
+  try {
+    // Get refresh token from cookie or body
+    const refreshToken = req.cookies?.refreshToken || req.body.refreshToken;
+    const deviceId = req.body.deviceId;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        error: 'Refresh token required',
+        code: 'REFRESH_TOKEN_REQUIRED'
+      });
+    }
+
+    const result = await authService.refreshAccessToken({
+      refreshToken,
+      deviceId,
+      userAgent: req.headers['user-agent'],
+      ipAddress: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || req.socket?.remoteAddress
+    });
+
+    if (!result.success) {
+      // Clear invalid cookie
+      res.clearCookie('refreshToken');
+      return res.status(401).json({
+        success: false,
+        error: result.message,
+        code: result.code
+      });
+    }
+
+    // Set new rotated refresh token cookie
+    const isProd = String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
+
+    return res.json({
+      success: true,
+      accessToken: result.accessToken,
+      user: result.user
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/logout
+ * @desc    Logout and revoke session
+ * @access  Authenticated
+ */
+router.post('/logout', requireAuth, async (req, res, next) => {
+  try {
+    const { allSessions = false } = req.body || {};
+    const sessionId = req.user.sessionId || req.headers['x-session-id'];
+    const refreshToken = req.cookies?.refreshToken;
+
+    const result = await authService.logout({
+      sessionId,
+      refreshToken,
+      userId: req.user.id,
+      allSessions
+    });
+
+    // Clear refresh token cookie
+    res.clearCookie('refreshToken');
+
+    return res.json(result);
   } catch (error) {
     return next(error);
   }
@@ -51,6 +215,282 @@ router.post('/login', async (req, res, next) => {
  */
 router.get('/me', requireAuth, async (req, res) => {
   res.json({ success: true, user: req.user });
+});
+
+/**
+ * @route   GET /api/auth/sessions
+ * @desc    Get active sessions for current user
+ * @access  Authenticated
+ */
+router.get('/sessions', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const sessions = await authService.getActiveSessions(req.user.id, req.companyId);
+    return res.json({ success: true, sessions });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   DELETE /api/auth/sessions/:sessionId
+ * @desc    Revoke a specific session
+ * @access  Authenticated
+ */
+router.delete('/sessions/:sessionId', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    const result = await authService.revokeSession({
+      sessionId,
+      userId: req.user.id,
+      revokedBy: req.user.id,
+      reason: 'user_revoke'
+    });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/sessions/:sessionId/trust
+ * @desc    Mark a device as trusted
+ * @access  Authenticated
+ */
+router.post('/sessions/:sessionId/trust', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    const result = await authService.trustDevice({ sessionId, userId: req.user.id });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   DELETE /api/auth/sessions/:sessionId/trust
+ * @desc    Remove trusted status from device
+ * @access  Authenticated
+ */
+router.delete('/sessions/:sessionId/trust', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const { sessionId } = req.params;
+    const result = await authService.untrustDevice({ sessionId });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   GET /api/auth/login-history
+ * @desc    Get login history for current user
+ * @access  Authenticated
+ */
+router.get('/login-history', requireAuth, requireCompanyContext, async (req, res, next) => {
+  try {
+    const { limit = 50 } = req.query;
+    const history = await authService.getLoginHistory({
+      userId: req.user.id,
+      companyId: req.companyId,
+      limit: parseInt(limit)
+    });
+    return res.json({ success: true, history });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/setup
+ * @desc    Initiate MFA setup (returns secret and QR code)
+ * @access  Authenticated
+ */
+router.post('/mfa/setup', requireAuth, async (req, res, next) => {
+  try {
+    const result = await authService.setupMfa({ userId: req.user.id });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    // Don't return secret in response after setup confirmed
+    // For now return it for QR code generation
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/confirm
+ * @desc    Confirm MFA setup with TOTP code
+ * @access  Authenticated
+ */
+router.post('/mfa/confirm', requireAuth, async (req, res, next) => {
+  try {
+    const { code } = req.body || {};
+    if (!code) {
+      return res.status(400).json({ success: false, error: 'MFA code required', code: 'CODE_REQUIRED' });
+    }
+    const result = await authService.confirmMfaSetup({ userId: req.user.id, code });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/disable
+ * @desc    Disable MFA (requires password)
+ * @access  Authenticated
+ */
+router.post('/mfa/disable', requireAuth, async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ success: false, error: 'Password required', code: 'PASSWORD_REQUIRED' });
+    }
+    const result = await authService.disableMfa({ userId: req.user.id, password });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    // Clear refresh token cookie since all sessions revoked
+    res.clearCookie('refreshToken');
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/backup-codes
+ * @desc    Regenerate MFA backup codes (requires password)
+ * @access  Authenticated
+ */
+router.post('/mfa/backup-codes', requireAuth, async (req, res, next) => {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ success: false, error: 'Password required', code: 'PASSWORD_REQUIRED' });
+    }
+    const result = await authService.regenerateBackupCodes({ userId: req.user.id, password });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/password/change
+ * @desc    Change password (requires current password)
+ * @access  Authenticated
+ */
+router.post('/password/change', requireAuth, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Current and new password required', code: 'PASSWORDS_REQUIRED' });
+    }
+    const result = await authService.changePassword({ userId: req.user.id, currentPassword, newPassword });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    // Clear refresh token cookie since all sessions revoked
+    res.clearCookie('refreshToken');
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/password/reset/request
+ * @desc    Request a password reset token for an email (always returns 200 to
+ *          avoid user enumeration). Token is hashed before storage and expires
+ *          after 1 hour.
+ * @access  Public
+ */
+router.post('/password/reset/request', async (req, res, next) => {
+  try {
+    const emailValue = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    if (!emailValue) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+        code: 'EMAIL_REQUIRED'
+      });
+    }
+    const result = await authService.requestPasswordReset({ email: emailValue });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/password/reset/confirm
+ * @desc    Confirm a password reset using a valid, unexpired token
+ * @access  Public
+ */
+router.post('/password/reset/confirm', async (req, res, next) => {
+  try {
+    const { token, newPassword } = req.body || {};
+    if (!token || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Reset token and new password are required',
+        code: 'RESET_REQUIRED'
+      });
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 8) {
+      return res.status(400).json({
+        success: false,
+        error: 'New password must be at least 8 characters',
+        code: 'PASSWORD_TOO_SHORT'
+      });
+    }
+    const result = await authService.confirmPasswordReset({ token, newPassword });
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/passkeys
+ * @desc    Add a passkey credential
+ * @access  Authenticated
+ */
+router.post('/passkeys', requireAuth, async (req, res, next) => {
+  try {
+    const { credentialId, publicKey, counter, name } = req.body || {};
+    if (!credentialId || !publicKey) {
+      return res.status(400).json({ success: false, error: 'Credential ID and public key required', code: 'PASSKEY_REQUIRED' });
+    }
+    const result = await authService.addPasskey({ userId: req.user.id, credentialId, publicKey, counter, name });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * @route   DELETE /api/auth/passkeys/:credentialId
+ * @desc    Remove a passkey credential
+ * @access  Authenticated
+ */
+router.delete('/passkeys/:credentialId', requireAuth, async (req, res, next) => {
+  try {
+    const { credentialId } = req.params;
+    const result = await authService.removePasskey({ userId: req.user.id, credentialId });
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
 });
 
 /**
@@ -97,164 +537,10 @@ router.post('/register', async (req, res, next) => {
       });
     }
 
-    // Statics are exposed directly on the model (e.g. `User.hashPassword`).
-    // `User.statics` is not part of the public Mongoose model API.
     const passwordHash = await User.hashPassword(password);
-    const user = await User.create({
-      name: String(name).trim(),
-      email: emailValue,
-      passwordHash,
-      role: 'broker',
-      isDemoData: false
-    });
-
-    const token = signToken(user);
-    return res.status(201).json({
-      success: true,
-      token,
-      user: user.toSafeJSON(),
-      message: 'Account created. You are now signed in.'
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-/**
- * @route   POST /api/auth/password/change
- * @desc    Authenticated user changes their own password (requires current password)
- * @access  Authenticated
- */
-router.post('/password/change', requireAuth, async (req, res, next) => {
-  try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        error: 'Current password and new password are required',
-        code: 'PASSWORDS_REQUIRED'
-      });
-    }
-    if (typeof newPassword !== 'string' || newPassword.length < 8) {
-      return res.status(400).json({
-        success: false,
-        error: 'New password must be at least 8 characters',
-        code: 'PASSWORD_TOO_SHORT'
-      });
-    }
-    if (newPassword === currentPassword) {
-      return res.status(400).json({
-        success: false,
-        error: 'New password must differ from current password',
-        code: 'PASSWORD_UNCHANGED'
-      });
-    }
-
-    const user = await User.findById(req.user.id).select('+passwordHash');
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'User not found' });
-    }
-    const ok = await user.verifyPassword(currentPassword);
-    if (!ok) {
-      return res.status(401).json({ success: false, error: 'Current password is incorrect' });
-    }
-
-    user.passwordHash = await User.hashPassword(newPassword);
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save();
-    return res.json({ success: true, message: 'Password changed successfully' });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-/**
- * @route   POST /api/auth/password/reset/request
- * @desc    Request a password reset token for an email (always returns 200 to
- *          avoid user enumeration). Token is hashed before storage and expires
- *          after 1 hour.
- * @access  Public
- */
-router.post('/password/reset/request', async (req, res, next) => {
-  try {
-    const emailValue = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
-    if (!emailValue) {
-      return res.status(400).json({
-        success: false,
-        error: 'Email is required',
-        code: 'EMAIL_REQUIRED'
-      });
-    }
-    const user = await User.findOne({ email: emailValue });
-    if (!user) {
-      // Never reveal whether an email exists.
-      return res.json({ success: true, message: 'If an account exists, a reset token has been issued.' });
-    }
-    const token = crypto.randomBytes(32).toString('hex');
-    user.passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
-    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await user.save();
-    
-    // SECURITY: Never return reset token in API response.
-    // Token must be delivered via verified email channel only.
-    // In development, log token for testing; in production, send via email service.
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[DEV] Password reset token for', emailValue, ':', token);
-    }
-    // TODO: Integrate with email service (SendGrid, SES, etc.) to send token via email
-    // await emailService.sendPasswordResetEmail(emailValue, token);
-    
-    return res.json({
-      success: true,
-      message: 'If an account exists, a reset token has been issued via email.'
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-/**
- * @route   POST /api/auth/password/reset/confirm
- * @desc    Confirm a password reset using a valid, unexpired token
- * @access  Public
- */
-router.post('/password/reset/confirm', async (req, res, next) => {
-  try {
-    const { token, newPassword } = req.body || {};
-    if (!token || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        error: 'Reset token and new password are required',
-        code: 'RESET_REQUIRED'
-      });
-    }
-    if (typeof newPassword !== 'string' || newPassword.length < 8) {
-      return res.status(400).json({
-        success: false,
-        error: 'New password must be at least 8 characters',
-        code: 'PASSWORD_TOO_SHORT'
-      });
-    }
-
-    const resetTokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    const user = await User.findOne({
-      passwordResetToken: resetTokenHash,
-      passwordResetExpires: { $gt: new Date() }
-    }).select('+passwordHash');
-    if (!user) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid or expired reset token',
-        code: 'INVALID_RESET_TOKEN'
-      });
-    }
-
-    user.passwordHash = await User.hashPassword(newPassword);
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    await user.save();
-    return res.json({ success: true, message: 'Password reset successfully' });
+    const user = await User.create({ name: String(name).trim(), email: emailValue, passwordHash, role: 'broker' });
+    const token = require('../middleware/auth').signToken(user);
+    return res.status(201).json({ success: true, token, user: user.toSafeJSON() });
   } catch (error) {
     return next(error);
   }
